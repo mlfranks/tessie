@@ -5,3 +5,16 @@ moc_*
 .DS_Store
 *~
 .vscode/settings.json
+*.swp
+
+# Ignore tessie stuff created during build
+src/tessie
+src/tessie.csv
+
+# Ignore node stuff, dependency lock files...
+node/node_modules/
+node/package-lock.json
+
+# Ignore Qt/QMake build artifacts
+src/.qmake.stash
+src/Makefile
