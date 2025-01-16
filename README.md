@@ -2,6 +2,9 @@
 
 Etymology: tessie sounds better than TC (box), for temperature cycling (box)
 
+## Information
+This is a fork of `ursl/tessie`. Some modifications have been made for compatibility with PSI coldboxes at ETH Zurich. 
+
 ## Installation
 >[!IMPORTANT]
 >Please start with the [user guide](https://github.com/ursl/tessie/blob/master/main.pdf).
