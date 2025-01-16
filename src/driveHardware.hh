@@ -266,7 +266,7 @@ private:
   const double SAFETY_DPMARGIN = 2.;
   
   // -- reset to 35 if flowmeter present
-  double MAX_TEMP = 25.; 
+  double MAX_TEMP = 50.; 
   // -- various temperatures
   double SAFETY_MAXSHT85TEMP{MAX_TEMP};
   double SAFETY_MAXTEMPW{MAX_TEMP};
