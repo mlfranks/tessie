@@ -2,6 +2,11 @@
 
 All notable changes to this fork compared to `ursl/tessie` will be documented in this file.
 
+## 2025-03-19
+
+### Changed
+- Rebased on upstream tag `2025/01/30-01`
+
 ## 2024-10-16
 
 ### Added
