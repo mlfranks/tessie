@@ -37,6 +37,7 @@ private:
   void btnINTL();
   void btnSound();
   void btnStop();
+  void btnRestartTessieWeb();
   void btnValve0();
   void btnValve1();
 
@@ -57,7 +58,7 @@ private:
   tLog&         fLOG;
   driveHardware *fpHw;
 
-  QFont fFont1, fFont2;
+  QFont fFont1, fFont2, fFont3;
 
   std::vector<QLineEdit* > fqleTEC;
   std::vector<QLabel* >    flblTEC;

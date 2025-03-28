@@ -311,6 +311,8 @@ driveHardware::driveHardware(tLog& x, int verbose): fLOG(x) {
     a << "I2C slave status[0x" << hex << it.first << dec << "] = " << it.second;
     fLOG(INFO, a.str()); 
   }
+
+  clearTECErrors();
 #endif
   
 }
@@ -586,7 +588,7 @@ void driveHardware::ensureSafety() {
   }
   if (fAirTemp > SHUTDOWN_TEMP) {
     stopOperations(2);
-  }      
+  }
 
   // -- ensure chiller running if at least one TEC is turned on
   if (anyTECRunning()) {
@@ -598,7 +600,7 @@ void driveHardware::ensureSafety() {
         greenLight = false;
         allOK = 2;
         if (0 == fStopOperations) fStatusString = "Turn on chiller!";
-        stringstream a("==WARNING== chiller not running, turn it on = ");
+        stringstream a("==ERROR== chiller not running, turn it on = ");
         fLOG(ERROR, a.str());
         emit signalSendToMonitor(QString::fromStdString(a.str()));
         emit signalSendToServer(QString::fromStdString(a.str()));
@@ -1176,6 +1178,14 @@ void driveHardware::parseIoMessage() {
     if (findInIoMessage(s1, s2, s3)) {
       stringstream str;
       str << "valve1" << " = " << (getStatusValve1()?"on":"off");
+      QString qmsg = QString::fromStdString(str.str());
+      emit signalSendToServer(qmsg);
+    }
+
+    s1 = "throttleN2"; s2 = "throttle";
+    if (findInIoMessage(s1, s2, s3)) {
+      stringstream str;
+      str << "throttle" << " = " << (getThrottleStatus()?"on":"off");
       QString qmsg = QString::fromStdString(str.str());
       emit signalSendToServer(qmsg);
     }
@@ -1944,6 +1954,16 @@ void driveHardware::saveToFlash() {
 
 
 // ----------------------------------------------------------------------
+void driveHardware::clearTECErrors() {
+  fCANId = (CANBUS_SHIFT | CANBUS_PUBLIC | CANBUS_TECREC | CANBUS_CMD);
+  fCANReg = 5; // clear TEC error
+  fCANVal = fTECParameter;
+  sendCANmessage();
+
+}
+
+
+// ----------------------------------------------------------------------
 void driveHardware::initTECData() {
   for (unsigned int itec = 1; itec <=8; ++itec) {
     fTECData.insert(make_pair(itec, initAllTECRegister()));
@@ -2140,8 +2160,20 @@ void driveHardware::dumpMQTT(int all) {
     stringstream ss;
     ss << skey.first << " = ";
     bool printit(false);
+    bool isInt(false); 
+    bool isHex(false); 
+    if (skey.first == "Mode")  isInt = true;
+    if (skey.first == "PowerState")  isInt = true;
+    if (skey.first == "Error") isHex = true;
+
     for (int i = 1; i <= 8; ++i) {
-      ss << fTECData[i].reg[skey.first].value;
+      if (isInt) {
+        ss << static_cast<int>(fTECData[i].reg[skey.first].value);
+      } else if (isHex) {
+        ss << "0x" << hex << static_cast<int>(fTECData[i].reg[skey.first].value) << dec;
+      } else {
+        ss << fTECData[i].reg[skey.first].value;
+      }
       if (1 == all) {
         printit = true;
       } else {
@@ -2407,26 +2439,42 @@ void driveHardware::readSHT85() {
 // ----------------------------------------------------------------------
 void driveHardware::readFlowmeter() {
 #ifdef PI
-  int handle = i2c_open(fPiGPIO, I2CBUS, I2C_FLOWMETER_ADDR, 0);
+  int cnt(0);
+  int oldfFlowMeterStatus = fFlowMeterStatus;
+  while (cnt < 2) {
+    int handle = i2c_open(fPiGPIO, I2CBUS, I2C_FLOWMETER_ADDR, 0);
+    // -- set command byte to 0x0 (Register: Input Port, Protocol: Read Byte)
+    char command = 0x0;
+    int length = i2c_write_device(fPiGPIO, handle, &command, 1);
+    std::this_thread::sleep_for(fMilli20);
+    
+    char data = 0x0;
+    length = i2c_read_device(fPiGPIO, handle, &data, 1);
+    i2c_close(fPiGPIO, handle);
 
-  // -- set command byte to 0x0 (Register: Input Port, Protocol: Read Byte)
-  char command = 0x0;
-  int length = i2c_write_device(fPiGPIO, handle, &command, 1);
-  std::this_thread::sleep_for(fMilli20);
+    if (length < 1) {
+      fFlowMeterStatus = -1;
+    } else {
+      data = ~data;
+      fFlowMeterStatus = data & 1;
+    }
+    if (1 == fFlowMeterStatus) {
+      break;
+    }
 
-  char data = 0x0;
-  length = i2c_read_device(fPiGPIO, handle, &data, 1);
-  if (length < 1) {
-    fFlowMeterStatus = -1;
-  } else {
-    data = ~data;
-    fFlowMeterStatus = data & 1;
+    if (1 == oldfFlowMeterStatus && 0 == fFlowMeterStatus) {
+      fLOG(INFO, "Flow switch changed from on to off. Double-check!");
+      std::this_thread::sleep_for(std::chrono::milliseconds(500));
+      std::this_thread::sleep_for(std::chrono::milliseconds(500));
+      std::this_thread::sleep_for(std::chrono::milliseconds(500));
+      std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    }
+    ++cnt;
   }
 
-  stringstream a("flowmeter readout data =  " + to_string(data)
-                 + " fFlowMeterStatus = " + to_string(fFlowMeterStatus));
+  //  stringstream a("flowmeter readout data =  " + to_string(data)
+  //                 + " fFlowMeterStatus = " + to_string(fFlowMeterStatus));
    // fLOG(INFO, a.str());
-  i2c_close(fPiGPIO, handle);
 #endif
 }
 

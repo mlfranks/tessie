@@ -189,6 +189,19 @@
         </tr>
 
         <tr>
+          <td>PowerState (0=Off, 1=On)</td>
+          <td> </td>
+          <td id="PowerState1">wait </td>
+          <td id="PowerState2">wait </td>
+          <td id="PowerState3">wait </td>
+          <td id="PowerState4">wait </td>
+          <td id="PowerState5">wait </td>
+          <td id="PowerState6">wait </td>
+          <td id="PowerState7">wait </td>
+          <td id="PowerState8">wait </td>
+        </tr>
+
+        <tr>
           <td>Mode (0=T, 1=V)</td>
           <td> <input id="Mode0" maxlength="3" size="3" value="all"  onchange="chgMode(0,this.value)"></td>
           <td> <input id="Mode1" maxlength="3" size="3" value="wait" onchange="chgMode(1,this.value)"></td>
@@ -241,16 +254,16 @@
         </tr>
 
         <tr>
-          <td>PowerState (0=Off, 1=On)</td>
-          <td> </td>
-          <td id="PowerState1">wait </td>
-          <td id="PowerState2">wait </td>
-          <td id="PowerState3">wait </td>
-          <td id="PowerState4">wait </td>
-          <td id="PowerState5">wait </td>
-          <td id="PowerState6">wait </td>
-          <td id="PowerState7">wait </td>
-          <td id="PowerState8">wait </td>
+          <td>Errorstate (click for details)</td>
+          <td><button id="ClearTECError" disabled>Clear</button></td>
+          <td><button id="ErrorState1" disabled>wait </button></td>
+          <td><button id="ErrorState2" disabled>wait </button></td>
+          <td><button id="ErrorState3" disabled>wait </button></td>
+          <td><button id="ErrorState4" disabled>wait </button></td>
+          <td><button id="ErrorState5" disabled>wait </button></td>
+          <td><button id="ErrorState6" disabled>wait </button></td>
+          <td><button id="ErrorState7" disabled>wait </button></td>
+          <td><button id="ErrorState8" disabled>wait </button></td>
         </tr>
 
         <tr>
@@ -373,6 +386,56 @@
       </table>
     </div>
 
+    <div id="tec1pop" popover>
+      <h2 id="tec1errorTitle"></h2>
+      <p id="tec1errorValue"></p>
+      <p id="tec1errorExplanation"></p>
+      <p>Click outside or press ESC to close this notice</p>
+    </div>
+    <div id="tec2pop" popover>
+      <h2 id="tec2errorTitle"></h2>
+      <p id="tec2errorValue"></p>
+      <p id="tec2errorExplanation"></p>
+      <p>Click outside or press ESC (escape) to close this notice</p>
+    </div>
+    <div id="tec3pop" popover>
+      <h2 id="tec3errorTitle"></h2>
+      <p id="tec3errorValue"></p>
+      <p id="tec3errorExplanation"></p>
+      <p>Click outside or press ESC (escape) to close this notice</p>
+    </div>
+    <div id="tec4pop" popover>
+      <h2 id="tec4errorTitle"></h2>
+      <p id="tec4errorValue"></p>
+      <p id="tec4errorExplanation"></p>
+      <p>Click outside or press ESC (escape) to close this notice</p>
+    </div>
+    <div id="tec5pop" popover>
+      <h2 id="tec5errorTitle"></h2>
+      <p id="tec5errorValue"></p>
+      <p id="tec5errorExplanation"></p>
+      <p>Click outside or press ESC (escape) to close this notice</p>
+    </div>
+    <div id="tec6pop" popover>
+      <h2 id="tec6errorTitle"></h2>
+      <p id="tec6errorValue"></p>
+      <p id="tec6errorExplanation"></p>
+      <p>Click outside or press ESC (escape) to close this notice</p>
+    </div>
+    <div id="tec7pop" popover>
+      <h2 id="tec7errorTitle"></h2>
+      <p id="tec7errorValue"></p>
+      <p id="tec7errorExplanation"></p>
+      <p>Click outside or press ESC (escape) to close this notice</p>
+    </div>
+    <div id="tec8pop" popover>
+      <h2 id="tec8errorTitle"></h2>
+      <p id="tec8errorValue"></p>
+      <p id="tec8errorExplanation"></p>
+      <p>Click outside or press ESC (escape) to close this notice</p>
+    </div>
+
+
     <script src="/socket.io/socket.io.js"></script>
     <script>
 
@@ -387,6 +450,16 @@
       // var mp3_url = 'https://media.geeksforgeeks.org/wp-content/uploads/20190531135120/beep.mp3';
       // (new Audio(mp3_url)).play();
 
+      let fecErrors = Array("no error", 
+                            "no error", 
+                            "no error", 
+                            "no error", 
+                            "no error", 
+                            "no error", 
+                            "no error", 
+                            "no error");
+     
+
       let mycolors = [];
       mycolors.push('#0000fa'); // dark blue
       mycolors.push('#1450fa'); // blue
@@ -397,6 +470,7 @@
       mycolors.push('#f0f000'); // yellow
       mycolors.push('#f05000'); // orange
       mycolors.push('#f00000'); // red
+      mycolors.push('#ffffff'); // white
 
       const socket = io.connect();
       const valve0 = document.getElementById('valve0');
@@ -598,9 +672,11 @@
               } else {
                   if (parseInt(vNumbers[i-1]).toFixed(0) == 1) {
                       document.getElementById(ps).innerHTML = parseInt(vNumbers[i-1]).toFixed(0);
+                      document.getElementById(ps).style.backgroundColor = mycolors[4];
                       document.getElementById(ct).checked = true;
                   } else {
                       document.getElementById(ps).innerHTML = parseInt(vNumbers[i-1]).toFixed(0);
+                      document.getElementById(ps).style.backgroundColor = mycolors[9];
                       document.getElementById(ct).checked = false;
                       checkAll = false;
                   }
@@ -738,6 +814,39 @@
               let tm = 'Temp_Set' + i.toString();
               if (document.activeElement != document.getElementById(tm))
                   document.getElementById(tm).value = parseFloat(vNumbers[i-1]).toFixed(2);
+          }
+      });
+
+      socket.on('ErrorString', (msg) => {
+          const snumbers = msg.toString().replace('Error = ', '');
+          const vNumbers = snumbers.split(',');
+          let cntErrs = 0; 
+          for (let i = 1; i <= 8; i++) {
+              let es = 'ErrorState' + i.toString();
+              if (parseInt(vNumbers[i-1]) > 0) {
+                  cntErrs++;
+                  
+                  fecErrors[i-1] = parseInt(vNumbers[i-1]);
+                  document.getElementById(es).innerHTML = "show";
+                  document.getElementById(es).style.backgroundColor = mycolors[8];
+                  document.getElementById(es).disabled = false;
+                  document.getElementById("tec" + i.toString() + "errorTitle").innerHTML = "Error in TEC " + i.toString();
+                  document.getElementById("tec" + i.toString() + "errorValue").innerHTML = "0x" + fecErrors[i-1].toString(16);
+                  document.getElementById("tec" + i.toString() + "errorExplanation").innerHTML = tecErrorExplanation(fecErrors[i-1]);
+
+                  document.getElementById("ClearTECError").disabled = false;
+              } else {
+                  fecErrors[i-1] = 0;
+                  document.getElementById(es).innerHTML = "OK";
+                  document.getElementById(es).style.backgroundColor = mycolors[4];
+                  document.getElementById(es).disabled = true;
+                  document.getElementById("tec" + i.toString() + "errorTitle").innerHTML = "No Error in TEC " + i.toString();
+                  document.getElementById("tec" + i.toString() + "errorValue").innerHTML = "0x0";
+                  document.getElementById("tec" + i.toString() + "errorExplanation").innerHTML = "Relax, all is well";
+              }
+          }
+          if (cntErrs == 0) {
+              document.getElementById("ClearTECError").disabled = true;
           }
       });
 
@@ -889,13 +998,133 @@
           return 0;
       }
 
+      function tecErrorExplanation(tecerr) {
+          const catDict = {
+              1: "CAN_ERROR", 
+              2: "SPI_ERROR",
+              3: "AI_Error",
+              4: "AI_DMA_ERROR",
+              5: "TEMP_ERROR",
+              6: "VARH_ERROR",
+              7: "PELTIER_ERROR",
+              8: "MAIN_ERROR",
+              9: "HARDFAULT_ERROR"
+          };
+
+          const regDict = {
+              0: "Mode", 
+              1: "ControlVoltage_Set", 
+              2: "PID_kp", 
+              3: "PID_ki", 
+              4: "PID_kd",
+              5: "Temp_Set", 
+              6: "PID_Max", 
+              7: "PID_Min", 
+              8: "Temp_W", 
+              9: "Temp_M",
+              10:"Temp_Diff", 
+              11:"Peltier_U", 
+              12:"Peltier_I",
+              13:"Peltier_R",
+              14:"Peltier_P",
+              15:"Supply_U",
+              16:"Supply_I",
+              17:"Supply_P",
+              18:"PowerState",
+              19:"Error",
+              20:"Ref_U"
+          };
+
+          const VARH_ERROR = { // 0x06000000
+              0x1: "VARH_ERROR_INVALID_VARIABLE",      
+              0x2: "VARH_ERROR_INVALID_DATA",
+              0x4: "VARH_ERROR_READONLY",
+              0x8: "VARH_ERROR_OUTOFRANGE",
+              0x10: "VARH_ERROR_OUTOFRANGE_INT" ,
+              0x20: "VARH_ERROR_LOAD_FLASH"
+          };
+ 
+          const PELTIER_ERROR = { // 0x07000000
+              0x1: "PELTIER_ERROR_SETVOLTAGE",
+              0x2: "PELTIER_ERROR_SETVOLTAGE_PID",
+              0x4: "PELTIER_ERROR_MAX_POWER"
+          };
+ 
+          const MAIN_ERROR = { // 0x08000000
+              0x1: "MAIN_ERROR_REG_NOT_FOUND", 
+              0x2: "MAIN_ERROR_CMD_NOT_FOUND", 
+              0x4: "MAIN_ERROR_SAVE_FLASH",
+              0x8: "MAIN_ERROR_WATCHDOG"
+          };
+ 
+
+
+          let cat = (tecerr & 0xff000000)>>24;
+          let reg = (tecerr & 0x0000ff00)>>8;
+          let err = (tecerr & 0x000000ff);
+          let errtext = "";
+          if (cat == 0) {
+              // nothing
+          } else if (cat == 6) {
+              for (const [key, value] of Object.entries(VARH_ERROR)) {
+                  let eak = err&key;
+                  if (eak > 0) {
+                      errtext = errtext.concat(value, " ");
+                  }
+              }
+          } else if (cat == 7) {
+              for (const [key, value] of Object.entries(PELTIER_ERROR)) {
+                  let eak = err&key;
+                  if (eak > 0) {
+                      errtext = errtext.concat(value, " ");
+                  }
+              }
+          } else if (cat == 8) {
+              for (const [key, value] of Object.entries(MAIN_ERROR)) {
+                  let eak = err&key;
+                  if (eak > 0) {
+                      errtext = errtext.concat(value, " ");
+                  }
+              }
+          } else {
+              errtext = "please post an issue to github about this error!";
+          }
+
+
+          let str = "";
+          let msg = str.concat("category ", cat.toString(), " (", catDict[cat],
+                               ") <br> register ", reg.toString(), " (", regDict[reg],
+                               ") <br> error ", err.toString(), "(", errtext, ")");
+          return msg;
+      }
+
+
+
       document.onreadystatechange =  function disclaimerAlert() {
           if (document.readyState=='loaded' || document.readyState=='complete') {
               alert("Note: After clicking anything, the display will update only after reading back the coldbox state!\nThis allows synchronization between all connected browsers and the coldbox GUI.\nSo be patient before double-clicking!");
           }
       }
-    </script>
 
+      // -- add eight event listeners for TEC error popover display
+      for (let itec = 1; itec <= 8; itec++) {
+          let ps = 'tec' + itec.toString() + 'pop';
+          document.getElementById("ErrorState" + itec.toString()).addEventListener('click', (e) => {
+              const popupOpened = document.getElementById(ps).togglePopover();
+              // Check if popover is opened or closed on supporting browsers
+              if (popupOpened !== undefined) {
+                  // FIXME: now what?
+              }              
+          });
+      }
+
+
+      // -- emit ClearError when button pressed
+      document.getElementById("ClearTECError").addEventListener('click', (e) => {
+          socket.emit('ClearError');
+      });
+
+    </script>
 
   </body>
 </html>

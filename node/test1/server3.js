@@ -85,8 +85,8 @@ clientMqtt.on('connect', () => {
     })
 })
 
-clientMqtt.on('message', (topCtrl, payload) => {
-    if (payload.includes('GetSWVersion = ')) {
+clientMqtt.on('message', (topic, payload) => {
+    if (topic === "ctrlTessie" && payload.includes('GetSWVersion = ')) {
         fwverString = payload.toString();
     }
 })
@@ -99,81 +99,86 @@ clientMqtt.on('connect', () => {
 })
 
 
-clientMqtt.on('message', (topMon, payload) => {
+clientMqtt.on('message', (topic, payload) => {
     // -- reset strings
     AlarmString = '';
     WarningString = '';
     HintString = '';
 
-    if (payload.includes('Env = ')) {
-        envString = payload.toString();
+    
+    // -- only monTessie information should be used here. ctrlTessie can lead to "malformed" strings (single Temp_M)
+    if (topic === "monTessie") {
+        if (payload.includes('Env = ')) {
+            envString = payload.toString();
+        }
+        if (payload.includes('VAR = ')) {
+            varString = payload.toString();
+        }
+        if (payload.includes('PowerState = ')) {
+            PowerStateString = payload.toString();
+        }
+        if (payload.includes('ControlVoltage_Set = ')) {
+            ControlVoltage_SetString = payload.toString();
+        }
+        if (payload.includes('Temp_M = ')) {
+            Temp_MString = payload.toString();
+        }
+        if (payload.includes('Temp_W = ')) {
+            Temp_WString = payload.toString();
+        }
+        if (payload.includes('PID_kp = ')) {
+            PID_kpString = payload.toString();
+        }
+        if (payload.includes('PID_ki = ')) {
+            PID_kiString = payload.toString();
+        }
+        if (payload.includes('PID_kd = ')) {
+            PID_kdString = payload.toString();
+        }
+        if (payload.includes('Temp_Set = ')) {
+            Temp_SetString = payload.toString();
+        }
+        if (payload.includes('PID_Max = ')) {
+            PID_MaxString = payload.toString();
+        }
+        if (payload.includes('PID_Min = ')) {
+            PID_MinString = payload.toString();
+        }
+        if (payload.includes('Temp_Diff = ')) {
+            Temp_DiffString = payload.toString();
+        }
+        if (payload.includes('Peltier_U = ')) {
+            Peltier_UString = payload.toString();
+        }
+        if (payload.includes('Peltier_I = ')) {
+            Peltier_IString = payload.toString();
+        }
+        if (payload.includes('Peltier_R = ')) {
+            Peltier_RString = payload.toString();
+        }
+        if (payload.includes('Peltier_P = ')) {
+            Peltier_PString = payload.toString();
+        }
+        if (payload.includes('Supply_U = ')) {
+            Supply_UString = payload.toString();
+        }
+        if (payload.includes('Supply_I = ')) {
+            Supply_IString = payload.toString();
+        }
+        if (payload.includes('Supply_P = ')) {
+            Supply_PString = payload.toString();
+        }
+        if (payload.includes('Error = ')) {
+            ErrorString = payload.toString();
+        }
+        if (payload.includes('Ref_U = ')) {
+            Ref_UString = payload.toString();
+        }
+        if (payload.includes('Mode = ')) {
+            ModeString = payload.toString();
+        }
     }
-    if (payload.includes('VAR = ')) {
-        varString = payload.toString();
-    }
-    if (payload.includes('PowerState = ')) {
-        PowerStateString = payload.toString();
-    }
-    if (payload.includes('ControlVoltage_Set = ')) {
-        ControlVoltage_SetString = payload.toString();
-    }
-    if (payload.includes('Temp_M = ')) {
-        Temp_MString = payload.toString();
-    }
-    if (payload.includes('Temp_W = ')) {
-        Temp_WString = payload.toString();
-    }
-    if (payload.includes('PID_kp = ')) {
-        PID_kpString = payload.toString();
-    }
-    if (payload.includes('PID_ki = ')) {
-        PID_kiString = payload.toString();
-    }
-    if (payload.includes('PID_kd = ')) {
-        PID_kdString = payload.toString();
-    }
-    if (payload.includes('Temp_Set = ')) {
-        Temp_SetString = payload.toString();
-    }
-    if (payload.includes('PID_Max = ')) {
-        PID_MaxString = payload.toString();
-    }
-    if (payload.includes('PID_Min = ')) {
-        PID_MinString = payload.toString();
-    }
-    if (payload.includes('Temp_Diff = ')) {
-        Temp_DiffString = payload.toString();
-    }
-    if (payload.includes('Peltier_U = ')) {
-        Peltier_UString = payload.toString();
-    }
-    if (payload.includes('Peltier_I = ')) {
-        Peltier_IString = payload.toString();
-    }
-    if (payload.includes('Peltier_R = ')) {
-        Peltier_RString = payload.toString();
-    }
-    if (payload.includes('Peltier_P = ')) {
-        Peltier_PString = payload.toString();
-    }
-    if (payload.includes('Supply_U = ')) {
-        Supply_UString = payload.toString();
-    }
-    if (payload.includes('Supply_I = ')) {
-        Supply_IString = payload.toString();
-    }
-    if (payload.includes('Supply_P = ')) {
-        Supply_PString = payload.toString();
-    }
-    if (payload.includes('Error = ')) {
-        ErrorString = payload.toString();
-    }
-    if (payload.includes('Ref_U = ')) {
-        Ref_UString = payload.toString();
-    }
-    if (payload.includes('Mode = ')) {
-        ModeString = payload.toString();
-    }
+
     if (payload.includes('==WARNING== ')) {
         WarningString = payload.toString();
     }
@@ -297,6 +302,16 @@ io.on('connection', (socket) => {
         });
     });
 
+
+    socket.on('ClearError', (msg) => {
+        clientMqtt.publish(topCtrl, 'cmd ClearError', {qos: 0, retain: false }, (error) => {
+            if (error) {
+                console.error(error)
+            }
+        })
+        console.log('cmd ClearError sent to MQTT');
+    });
+
     socket.on('loadFW', (msg) => {
         clientMqtt.publish(topCtrl, 'cmd LoadVariables', {qos: 0, retain: false }, (error) => {
             if (error) {
@@ -402,8 +417,8 @@ io.on('connection', (socket) => {
                 console.error(error)
             }
                
-            clientMqtt.on('message', (topCtrl, payload) => {
-                if (payload.includes('GetSWVersion = ')) {
+            clientMqtt.on('message', (topic, payload) => {
+                if (topic === "ctrlTessie" && payload.includes('GetSWVersion = ')) {
                     fwverString = payload.toString();
                 }
             })
