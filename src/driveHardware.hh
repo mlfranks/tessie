@@ -149,6 +149,9 @@ public:
   void loadFromFlash();
   void saveToFlash();
 
+  // -- clear TEC errors
+  void clearTECErrors();
+
 public slots:
   void  sentFromServer(QString msg);
   void  toggleFras(int imask);
@@ -260,7 +263,7 @@ private:
 
   std::string fStatusString, fHostName;
   int fFreeDiskspace, fTrafficRed, fTrafficYellow, fTrafficGreen;
-  int fStopOperations, fFlowMeterStatus, fThrottleStatus;
+  int fStopOperations, fFlowMeterStatus, fBadFlowMeterReading, fThrottleStatus;
   int fHeaterStatus;
 
   const double SAFETY_DPMARGIN = 2.;
