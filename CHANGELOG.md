@@ -2,6 +2,10 @@
 
 All notable changes to this fork compared to `ursl/tessie` will be documented in this file.
 
+## 2025-10-24
+- Rebased on upstream tag `2025/10-22/03`
+
+
 ## 2025-06-04
 - Rebased on upstream tag `2025/05/23-01`
 
