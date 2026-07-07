@@ -53,6 +53,8 @@ public:
   void breakInterlock();
   void resetInterlock();
 
+  void doReconditioning();
+
   std::string timeStamp(bool filestamp = true);
   std::string tStamp() {return timeStamp(false);}
 
@@ -78,12 +80,15 @@ public:
   int   getLidStatus() {return fLidStatus;}
   int   getInterlockStatus() {return fInterlockStatus;}
   int   getThrottleStatus() {return fThrottleStatus;}
+  int   getHeaterStatus() {return fHeaterStatus;}
   void  turnOnValve(int i); // i = 0 or 1
   void  turnOffValve(int i); // i = 0 or 1
   void  turnOnFan();
   void  turnOffFan();
   void  turnOnLV();
   void  turnOffLV();
+  void  power3V3(bool on);
+  void  powerCycle3V3(int n100ms = 1);
   bool  anyTECRunning();
   void  checkFan();
   void  checkLid();
@@ -103,6 +108,7 @@ public:
   int    getRegister();
   float  getValue();
   int    getSWVersion(int itec = 0);
+  int    getSWVersionCached(int itec = 1);
   char   crc(char *data, size_t len);
 
 #ifdef UZH
@@ -115,6 +121,7 @@ public:
   void    readHYT223();
   void    heatHYT223(bool on);
   void    readVProbe(int ipos);
+  void    readVProbeGnd();
   void    readFlowmeter();
   float   getTemperature();
   float   getRH();
@@ -132,6 +139,7 @@ public:
   
   // -- simply returns the value stored in fTECData
   float getTECRegister(int itec, std::string regname);
+  bool  isTECActive(int itec);
   int   getTECRegisterIdx(std::string rname);
 
   // -- read from and write to CAN
@@ -140,6 +148,7 @@ public:
 
   // -- same as above, but with "public" broadcast
   void  readAllParamsFromCANPublic();
+  bool  recoverCANBus();
 
   // -- AFTER readCANmessage() these can be used to get the relevant value
   float getCANReadFloatVal() {return fCANReadFloatVal;}
@@ -170,6 +179,7 @@ signals:
   void  signalUpdateHwDisplay();
   void  signalAlarm(int);
   void  signalKillSiren();
+  void  signalStartReconditioning();
 
 
 protected:
@@ -178,6 +188,8 @@ protected:
   int         diff_ms(timeval t1, timeval t2);
 
 private:
+  std::string formatHex(unsigned int value) const;
+
   tLog&   fLOG;
   QMutex fMutex;
   QWaitCondition fCondition;
@@ -199,6 +211,9 @@ private:
   std::map<int, int> fActiveTEC;
   int fNActiveTEC;
 
+  std::map<int, int> fSWVersionCached;
+  std::string fMonString;
+
   int     fCANReadIntVal;
   float   fCANReadFloatVal;
 
@@ -208,9 +223,18 @@ private:
   int fCANErrorCounter{0}, fCANErrorOld{0};
   int fI2CErrorCounter{0}, fI2CErrorOld{0};
   std::map<unsigned int, bool> fI2CSlaveStatus;
+
+  // -- CAN diagnostics for request/response accounting
+  int fCanLastReadRequested{0};
+  int fCanLastReadAttempts{0};
+  int fCanLastReadReceived{0};
+  int fCanLastAbsorbRead{0};
+  int fCanLastSentId{0};
+  int fCanLastSentReg{0};
+  int fCanShortfallCount{0};
    
   // -- timing and wall-clock ticks (or so)
-  std::chrono::milliseconds fMilli5, fMilli10, fMilli20, fMilli100;
+  std::chrono::milliseconds fMilli5, fMilli10, fMilli20, fMilli100, fMilli500;
   struct timeval ftvStart;
   int    fRunCnt;
 
@@ -226,7 +250,7 @@ private:
   float fAirTemp, fAirRH, fAirDP;
 
   // -- data from VProbe
-  std::string fVprobeVoltages;
+  std::string fVprobeVoltages, fVprobeGndVoltages;
 
   // -- lid status (read out from TEC7 (of 8)
   //    1 closed and locked (TEC7 Temp_W > 4000)
@@ -247,6 +271,9 @@ private:
   struct ifreq fIfrR;
   struct can_frame fFrameR;
 
+  bool   initCANSockets();
+  bool   recoverI2CBus();
+
   int    fPiGPIO;
 #endif
 
@@ -257,6 +284,12 @@ private:
   // -- all the registers, one element per TEC
   // -- this is a map instead of a vector to avoid the mismatch between '0' and '1'
   std::map<int, TECData> fTECData;
+  // -- keep track of which TECs have been turned on and ensure they turned on!
+  std::map<int, bool> fTECTurnedOn;
+
+
+  // -- data from VProbe
+  std::map<std::string, double> fMapVprobeGndVoltages;
 
   // -- keep alarm state
   int fAlarmState;
@@ -264,12 +297,13 @@ private:
   std::string fStatusString, fHostName;
   int fFreeDiskspace, fTrafficRed, fTrafficYellow, fTrafficGreen;
   int fStopOperations, fFlowMeterStatus, fBadFlowMeterReading, fThrottleStatus;
-  int fHeaterStatus;
+  int fHeaterStatus, fVersionOK;
+  int fReconditioning, fReconditioningWaitTime;
 
   const double SAFETY_DPMARGIN = 2.;
   
   // -- reset to 35 if flowmeter present
-  double MAX_TEMP = 50.; 
+  double MAX_TEMP = 40.; 
   // -- various temperatures
   double SAFETY_MAXSHT85TEMP{MAX_TEMP};
   double SAFETY_MAXTEMPW{MAX_TEMP};

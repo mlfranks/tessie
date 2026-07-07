@@ -30,6 +30,11 @@ MainWindow::MainWindow(tLog &x, driveHardware *h, QWidget *parent) :
   fFont3.setFamilies({QString::fromUtf8("Menlo")});
   fFont3.setPointSize(13);
 
+  // Add a smaller font for the header labels
+  QFont fFontHeader;
+  fFontHeader.setFamilies({QString::fromUtf8("Menlo")});
+  fFontHeader.setPointSize(16);
+
   const QSize btnSize = QSize(100, 50);
 
   this->resize(800, 480);
@@ -50,11 +55,33 @@ MainWindow::MainWindow(tLog &x, driveHardware *h, QWidget *parent) :
   INS.open("version.txt");
   getline(INS, sline);
   INS.close();
+  int version1 = fpHw->getSWVersionCached(1);
+  string sline2 = to_string(version1);
+  fLOG(INFO, "TEC 1 firmware version = " + to_string(version1) + " sline2 = " + sline2);
 
-  QLabel *lbl = new QLabel(string("TESSIE  (" + sline + ") " + fpHw->getHostname()).c_str()); setupLBL(lbl);
-  lbl->setStyleSheet("font-weight: bold;");
+  // Create vertical layout for the two labels
+  QVBoxLayout *vlayLabels = new QVBoxLayout();
+  vlayLabels->setSpacing(0); // Remove spacing between labels
+  
+  // First label with version and hostname
+  QLabel *lblVersion = new QLabel(string("TESSIE  " + fpHw->getHostname()).c_str()); 
+  setupLBL(lblVersion);
+  lblVersion->setFont(fFontHeader);
+  lblVersion->setStyleSheet("font-weight: bold;");
+  vlayLabels->addWidget(lblVersion);
+  
+  // Second label with hostname
+  string sline3 = "Version: " + sline + ". TEC f/w: " + sline2;
+  QLabel *lbl2 = new QLabel(sline3.c_str());
+  setupLBL(lbl2);
+  lbl2->setFont(fFont3);
+  vlayLabels->addWidget(lbl2);
+  
+  // Add the vertical layout to the horizontal layout
+  hlay->addLayout(vlayLabels);
 
-  hlay->addWidget(lbl);
+  // QLabel *lbl2 = new QLabel(fpHw->getStatusString().c_str()); setupLBL(lbl2);
+  // hlay->addWidget(lbl2);
 
   fLOG(INFO, "tessie version " + sline);
 
@@ -168,12 +195,12 @@ MainWindow::MainWindow(tLog &x, driveHardware *h, QWidget *parent) :
   connect(btn4, &QPushButton::clicked, this, &MainWindow::btnStop);
   glay01->addWidget(btn4, 3, 0, 1, 2, Qt::AlignLeft);
 
-  QPushButton *btn5 = new QPushButton("Restart tessieWeb"); btn5->setFocusPolicy(Qt::NoFocus);
+  QPushButton *btn5 = new QPushButton("Recondition!"); btn5->setFocusPolicy(Qt::NoFocus);
   btn5->setFont(fFont3);
   btn5->setFixedSize(QSize(190, 50));
   btn5->setStyleSheet("QPushButton {background-color: rgba(100, 100, 150, 0.3); color: black; font-weight: bold;}");
   //  btn5->update();
-  connect(btn5, &QPushButton::clicked, this, &MainWindow::btnRestartTessieWeb);
+  connect(btn5, &QPushButton::clicked, this, &MainWindow::btnStartReconditioning);
   glay01->addWidget(btn5, 3, 2, 1, 2, Qt::AlignRight);
 
   hlay0->addLayout(glay01);
@@ -264,6 +291,35 @@ MainWindow::MainWindow(tLog &x, driveHardware *h, QWidget *parent) :
   // white #ffffff
   QPalette p9; p9.setColor(QPalette::Base, QColor(255, 255, 255, trsp)); fPalettes.push_back(p9);
 
+  // -- Initialize reconditioning dialog
+  fReconditioningDialog = new QDialog(this);
+  fReconditioningDialog->setWindowTitle("Reconditioning in Progress");
+  fReconditioningDialog->setModal(true);
+  fReconditioningDialog->setFixedSize(400, 200);
+  fReconditioningDialog->setStyleSheet("QDialog { background-color: #FF6B6B; }");
+  
+  QVBoxLayout *dialogLayout = new QVBoxLayout(fReconditioningDialog);
+  
+  QLabel *titleLabel = new QLabel("⚠️ Reconditioning in Progress");
+  titleLabel->setAlignment(Qt::AlignCenter);
+  titleLabel->setStyleSheet("QLabel { color: white; font-size: 18px; font-weight: bold; }");
+  dialogLayout->addWidget(titleLabel);
+  
+  QLabel *messageLabel = new QLabel("Please wait while the system reconditions...");
+  messageLabel->setAlignment(Qt::AlignCenter);
+  messageLabel->setStyleSheet("QLabel { color: white; font-size: 14px; }");
+  dialogLayout->addWidget(messageLabel);
+  
+  fReconditioningStatus = new QLabel("Air Temperature: -- °C\nHeater Status: --");
+  fReconditioningStatus->setAlignment(Qt::AlignCenter);
+  fReconditioningStatus->setStyleSheet("QLabel { color: white; font-size: 12px; background-color: rgba(255,255,255,0.2); padding: 10px; border-radius: 5px; }");
+  dialogLayout->addWidget(fReconditioningStatus);
+  
+  QPushButton *closeButton = new QPushButton("Close Alert");
+  closeButton->setStyleSheet("QPushButton { background-color: rgba(255,255,255,0.3); color: white; border: 2px solid white; padding: 8px; border-radius: 5px; font-size: 12px; }");
+  connect(closeButton, &QPushButton::clicked, this, &MainWindow::hideReconditioningDialog);
+  dialogLayout->addWidget(closeButton);
+
 }
 
 
@@ -285,6 +341,8 @@ void MainWindow::updateHardwareDisplay() {
   } else  if (string::npos != ss.find("no problem")) {
     fqleStatus->setPalette(fPalettes[4]);
   } else  if (string::npos != ss.find("emergency")) {
+    fqleStatus->setPalette(fPalettes[8]);
+  } else  if (string::npos != ss.find("TEC f/w < 12")) {
     fqleStatus->setPalette(fPalettes[8]);
   } else {
     fqleStatus->setPalette(fPalettes[6]);
@@ -332,9 +390,9 @@ void MainWindow::updateHardwareDisplay() {
   if (0 == cnt) {
     int freedisk = fpHw->getFreeDisk(); 
     fqleFreeDisk->setText(QString::number(freedisk));
-    if (freedisk > 2) {
+    if (freedisk > 10) {
       fqleFreeDisk->setPalette(fPalettes[4]);
-    } else if ((freedisk >= 1) && (freedisk < 2)) {
+    } else if ((freedisk > 2) && (freedisk <= 10)) {
       fqleFreeDisk->setPalette(fPalettes[6]);
     } else {
       fqleFreeDisk->setPalette(fPalettes[8]);
@@ -405,14 +463,23 @@ if (fpHw->getStatusValve0()) {
 
 
   for (unsigned int i = 0; i < fqleTEC.size(); ++i) {
-    double temp = fpHw->getTECRegister(i+1, "Temp_M");
-    fqleTEC[i]->setText(QString::number(temp, 'f', 2));
-    fqleTEC[i]->setPalette(fPalettes[colorIndex(temp)]);
-    if ((temp - dp) < 2) {
-      if (!isred) fqleTEC[i]->setPalette(fPalettes[8]);
+    int itec = static_cast<int>(i) + 1;
+    bool active = fpHw->isTECActive(itec);
+    double temp = fpHw->getTECRegister(itec, "Temp_M");
+    if (active) {
+      fqleTEC[i]->setText(QString::number(temp, 'f', 2));
+      fqleTEC[i]->setPalette(fPalettes[colorIndex(temp)]);
+      if ((temp - dp) < 2) {
+        if (!isred) fqleTEC[i]->setPalette(fPalettes[8]);
+      }
+    } else {
+      fqleTEC[i]->setText("inact.");
+      fqleTEC[i]->setPalette(fPalettes[6]);
     }
 
-    if (fpHw->getTECRegister(i+1, "PowerState")) {
+    if (!active) {
+      flblTEC[i]->setStyleSheet("font-weight: bold; background-color: #FFD27F");
+    } else if (fpHw->getTECRegister(itec, "PowerState")) {
       flblTEC[i]->setStyleSheet("font-weight: bold; background-color: #A3C1DA");
     } else {
       flblTEC[i]->setStyleSheet("font-weight: normal; background-color: rgba(211, 211, 211, 60%)");
@@ -421,6 +488,24 @@ if (fpHw->getStatusValve0()) {
   }
 
   isred = !isred;
+
+  // -- Handle reconditioning dialog
+  int heaterStatus = fpHw->getHeaterStatus();
+  if (heaterStatus > 0) {
+    // Update dialog status if visible
+    if (fReconditioningDialog && fReconditioningDialog->isVisible()) {
+      QString statusText = QString("Air Temperature: %1 °C\nHeater Status: %2")
+                          .arg(fpHw->getTemperature(), 0, 'f', 1)
+                          .arg(heaterStatus);
+      fReconditioningStatus->setText(statusText);
+    } else {
+      // Show dialog if not already visible
+      showReconditioningDialog();
+    }
+  } else {
+    // Hide dialog when reconditioning is finished
+    hideReconditioningDialog();
+  }
 
 }
 
@@ -471,9 +556,9 @@ void MainWindow::btnStop() {
 }
 
 // ----------------------------------------------------------------------
-void MainWindow::btnRestartTessieWeb() {
-  cout << "MainWindow::btnRestartTessieWeb" << endl;
-  system("/usr/bin/sudo systemctl restart tessieWeb");
+void MainWindow::btnStartReconditioning() {
+  fLOG(INFO, "MainWindow::btnStartReconditioning() clicked");
+  fpHw->doReconditioning();
 }
 
 
@@ -601,4 +686,20 @@ void MainWindow::killSiren() {
   }
   pclose(fp);
  
+}
+
+// ----------------------------------------------------------------------
+void MainWindow::showReconditioningDialog() {
+  if (fReconditioningDialog && !fReconditioningDialog->isVisible()) {
+    fLOG(INFO, "Showing reconditioning dialog");
+    fReconditioningDialog->show();
+  }
+}
+
+// ----------------------------------------------------------------------
+void MainWindow::hideReconditioningDialog() {
+  if (fReconditioningDialog && fReconditioningDialog->isVisible()) {
+    fLOG(INFO, "Hiding reconditioning dialog");
+    fReconditioningDialog->hide();
+  }
 }

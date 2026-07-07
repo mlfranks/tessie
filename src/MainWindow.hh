@@ -14,6 +14,9 @@ class QLineEdit;
 class QLabel;
 class QPushButton;
 class QWidget;
+class QDialog;
+class QVBoxLayout;
+class QHBoxLayout;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -31,6 +34,7 @@ signals:
 public slots:
   void updateHardwareDisplay();
   void showAlarm(int);
+  void btnStartReconditioning();
 
 private:
   void btnQuit();
@@ -40,6 +44,9 @@ private:
   void btnRestartTessieWeb();
   void btnValve0();
   void btnValve1();
+
+  void showReconditioningDialog();
+  void hideReconditioningDialog();
 
   void setupQLE(QLineEdit *);
   void setupLBL(QLabel *);
@@ -54,6 +61,9 @@ private:
   QLineEdit *fqleWT, *fqleAT, *fqleRH, *fqleDP, *fqleLS, *fqleIL;
 
   QPushButton *fbtnValve0, *fbtnValve1;
+
+  QDialog *fReconditioningDialog;
+  QLabel *fReconditioningStatus;
 
   tLog&         fLOG;
   driveHardware *fpHw;

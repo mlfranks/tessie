@@ -14,7 +14,11 @@
           display: flex;
       }
       .mycontainer > div {
-          width:33.33%;
+          width:20%;
+          padding: 10px;
+          margin: 5px;
+          border-radius: 4px;
+          box-sizing: border-box;
       }
       .button {
           border: none;
@@ -32,9 +36,93 @@
           margin: 10px 0;
           line-height:22px;
       }
+      details {
+          margin: 1em 0;
+          padding: 0.5em;
+          background-color: #f8f9fa;
+          border: 1px solid #dee2e6;
+          border-radius: 4px;
+      }
+      details summary {
+          cursor: pointer;
+          padding: 0.5em;
+          font-weight: bold;
+          color: #495057;
+      }
+      details summary:hover {
+          background-color: #e9ecef;
+      }
+      details[open] summary {
+          margin-bottom: 0.5em;
+          border-bottom: 1px solid #dee2e6;
+      }
+      .table-wrapper {
+          max-width: 100vw; /* or a fixed px value matching the top */
+          margin: 0 auto;
+          overflow-x: auto;
+      }
+      
+      /* Reconditioning Alert Styles */
+      #reconditioningAlert {
+          position: fixed;
+          top: 0;
+          left: 0;
+          width: 100%;
+          height: 100%;
+          background-color: rgba(0, 0, 0, 0.8);
+          z-index: 9999;
+          display: none;
+          justify-content: center;
+          align-items: center;
+          flex-direction: column;
+      }
+      
+      #reconditioningAlert.show {
+          display: flex !important;
+      }
+      
+      .alert-content {
+          background-color: #FF6B6B;
+          color: white;
+          padding: 40px;
+          border-radius: 10px;
+          text-align: center;
+          font-size: 24px;
+          font-weight: bold;
+          box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+          max-width: 500px;
+          margin: 20px;
+      }
+      
+      .alert-content h2 {
+          margin: 0 0 20px 0;
+          font-size: 32px;
+      }
+      
+      .alert-content p {
+          margin: 0;
+          font-size: 18px;
+      }
     </style>
   </head>
   <body>
+    <!-- Reconditioning Alert -->
+    <div id="reconditioningAlert">
+        <div class="alert-content">
+            <h2>⚠️ Reconditioning in Progress</h2>
+            <p>Please wait while the system reconditions...</p>
+            <p>Target Air Temperature: 90 °C</p>
+            <p>Time at target temperature: 10 minutes</p>
+            <p>Cool down until Heater status is 0</p>
+            <div id="alertStatus" style="font-size: 18px; margin-top: 20px; padding: 15px; background-color: rgba(255,255,255,0.2); border-radius: 5px;">
+                <p style="margin: 5px 0;"><strong>Air Temperature:</strong> <span id="alertAirTemp">--</span> °C</p>
+                <p style="margin: 5px 0;"><strong>Heater Status:</strong> <span id="alertHeaterStatus">--</span></p>
+            </div>
+            <p style="font-size: 16px; margin-top: 15px; opacity: 0.9;">This process will complete automatically.</p>
+            <button onclick="hideReconditioningAlert()" style="background-color: rgba(255,255,255,0.3); color: white; border: 2px solid white; padding: 10px 20px; border-radius: 5px; font-size: 16px; margin-top: 15px; cursor: pointer;">Close Alert</button>
+        </div>
+    </div>
+
     <div class="mycontainer">
 
       <div style="background-color:DodgerBlue" float="left">
@@ -63,25 +151,27 @@
 
       <div style="background-color:DarkKhaki" >
         <b>tessie control: </b> <br>
-        TEC Firmware: 
+        TEC Variables: 
         <button id="loadFW">Load</button>
         <button id="saveFW">Save</button><br>
         CSV data:
         <button id="getcsv" disabled>Get CSV data</button>
+        <br><br>
+        <button id="startReconditioning" style="background-color:#FF6B6B; color:black; font-weight:bold">Start Reconditioning</button>
       </div>
 
       <div id="envDiv" style="background-color:MediumSeaGreen" float="center">
         <table>
           <tr>
-            <td>Air</td>
+            <td>Air [°C]</td>
             <td id="TempAir" style="text-align:right;">0 </td>
           </tr>
           <tr>
-            <td>Rel. Humidity</td>
+            <td>Rel. Humidity [%]</td>
             <td id="RelHum" style="text-align:right;">0 </td>
           </tr>
           <tr>
-            <td>Dew point</td>
+            <td>Dew point [°C]</td>
             <td id="DP" style="text-align:right;">0 </td>
           </tr>
           <tr>
@@ -89,7 +179,7 @@
             <td></td>
           </tr>
           <tr>
-            <td>Water</td>
+            <td>Water [°C]</td>
             <td id="TempWater" style="text-align:right;">0 </td>
           </tr>
         </table>
@@ -166,228 +256,269 @@
 
 
     <div class="w3-container w3-cream w3-cell">
-      <table class="w3-table">
-        <tr>
-          <th>Parameter</th>
-          <th>all</th>
-          <th>TEC 1</th>
-          <th>TEC 2</th>
-          <th>TEC 3</th>
-          <th>TEC 4</th>
-          <th>TEC 5</th>
-          <th>TEC 6</th>
-          <th>TEC 7</th>
-          <th>TEC 8</th>
-        </tr>
-        <tr>
-          <td>Turn on/off</td>
-          <td><input id="CheckTEC0" type="checkbox" onclick="clkCheckTec(0)"></td>
-          <td><input id="CheckTEC1" type="checkbox" onclick="clkCheckTec(1)"></td>
-          <td><input id="CheckTEC2" type="checkbox" onclick="clkCheckTec(2)"></td>
-          <td><input id="CheckTEC3" type="checkbox" onclick="clkCheckTec(3)"></td>
-          <td><input id="CheckTEC4" type="checkbox" onclick="clkCheckTec(4)"></td>
-          <td><input id="CheckTEC5" type="checkbox" onclick="clkCheckTec(5)"></td>
-          <td><input id="CheckTEC6" type="checkbox" onclick="clkCheckTec(6)"></td>
-          <td><input id="CheckTEC7" type="checkbox" onclick="clkCheckTec(7)"></td>
-          <td><input id="CheckTEC8" type="checkbox" onclick="clkCheckTec(8)"></td>
-        </tr>
+      <div class="table-wrapper">
+        <table class="w3-table">
+          <tr>
+            <th>Parameter</th>
+            <th>all</th>
+            <th>TEC 1</th>
+            <th>TEC 2</th>
+            <th>TEC 3</th>
+            <th>TEC 4</th>
+            <th>TEC 5</th>
+            <th>TEC 6</th>
+            <th>TEC 7</th>
+            <th>TEC 8</th>
+          </tr>
+          <tr>
+            <td>Turn on/off</td>
+            <td><input id="CheckTEC0" type="checkbox" onclick="clkCheckTec(0)"></td>
+            <td><input id="CheckTEC1" type="checkbox" onclick="clkCheckTec(1)"></td>
+            <td><input id="CheckTEC2" type="checkbox" onclick="clkCheckTec(2)"></td>
+            <td><input id="CheckTEC3" type="checkbox" onclick="clkCheckTec(3)"></td>
+            <td><input id="CheckTEC4" type="checkbox" onclick="clkCheckTec(4)"></td>
+            <td><input id="CheckTEC5" type="checkbox" onclick="clkCheckTec(5)"></td>
+            <td><input id="CheckTEC6" type="checkbox" onclick="clkCheckTec(6)"></td>
+            <td><input id="CheckTEC7" type="checkbox" onclick="clkCheckTec(7)"></td>
+            <td><input id="CheckTEC8" type="checkbox" onclick="clkCheckTec(8)"></td>
+          </tr>
 
-        <tr>
-          <td>PowerState (0=Off, 1=On)</td>
-          <td> </td>
-          <td id="PowerState1">wait </td>
-          <td id="PowerState2">wait </td>
-          <td id="PowerState3">wait </td>
-          <td id="PowerState4">wait </td>
-          <td id="PowerState5">wait </td>
-          <td id="PowerState6">wait </td>
-          <td id="PowerState7">wait </td>
-          <td id="PowerState8">wait </td>
-        </tr>
+          <tr>
+            <td>PowerState (0=Off, 1=On)</td>
+            <td> </td>
+            <td id="PowerState1">wait </td>
+            <td id="PowerState2">wait </td>
+            <td id="PowerState3">wait </td>
+            <td id="PowerState4">wait </td>
+            <td id="PowerState5">wait </td>
+            <td id="PowerState6">wait </td>
+            <td id="PowerState7">wait </td>
+            <td id="PowerState8">wait </td>
+          </tr>
 
-        <tr>
-          <td>Mode (0=T, 1=V)</td>
-          <td> <input id="Mode0" maxlength="3" size="3" value="all"  onchange="chgMode(0,this.value)"></td>
-          <td> <input id="Mode1" maxlength="3" size="3" value="wait" onchange="chgMode(1,this.value)"></td>
-          <td> <input id="Mode2" maxlength="3" size="3" value="wait" onchange="chgMode(2,this.value)"></td>
-          <td> <input id="Mode3" maxlength="3" size="3" value="wait" onchange="chgMode(3,this.value)"></td>
-          <td> <input id="Mode4" maxlength="3" size="3" value="wait" onchange="chgMode(4,this.value)"></td>
-          <td> <input id="Mode5" maxlength="3" size="3" value="wait" onchange="chgMode(5,this.value)"></td>
-          <td> <input id="Mode6" maxlength="3" size="3" value="wait" onchange="chgMode(6,this.value)"></td>
-          <td> <input id="Mode7" maxlength="3" size="3" value="wait" onchange="chgMode(7,this.value)"></td>
-          <td> <input id="Mode8" maxlength="3" size="3" value="wait" onchange="chgMode(8,this.value)"></td>
-        </tr>
+          <tr>
+            <td>Mode (0=T, 1=V)</td>
+            <td> <input id="Mode0" maxlength="3" size="3" value="all"  onchange="chgMode(0,this.value)"></td>
+            <td> <input id="Mode1" maxlength="3" size="3" value="wait" onchange="chgMode(1,this.value)"></td>
+            <td> <input id="Mode2" maxlength="3" size="3" value="wait" onchange="chgMode(2,this.value)"></td>
+            <td> <input id="Mode3" maxlength="3" size="3" value="wait" onchange="chgMode(3,this.value)"></td>
+            <td> <input id="Mode4" maxlength="3" size="3" value="wait" onchange="chgMode(4,this.value)"></td>
+            <td> <input id="Mode5" maxlength="3" size="3" value="wait" onchange="chgMode(5,this.value)"></td>
+            <td> <input id="Mode6" maxlength="3" size="3" value="wait" onchange="chgMode(6,this.value)"></td>
+            <td> <input id="Mode7" maxlength="3" size="3" value="wait" onchange="chgMode(7,this.value)"></td>
+            <td> <input id="Mode8" maxlength="3" size="3" value="wait" onchange="chgMode(8,this.value)"></td>
+          </tr>
 
-        <tr>
-          <td>ControlVoltage_Set [V]</td>
-          <td> <input id="ControlVoltage_Set0" maxlength="4" size="4" value="all"  onchange="chgControlVoltage_Set(0,this.value)"></td>
-          <td> <input id="ControlVoltage_Set1" maxlength="4" size="4" value="wait" onchange="chgControlVoltage_Set(1,this.value)"></td>
-          <td> <input id="ControlVoltage_Set2" maxlength="4" size="4" value="wait" onchange="chgControlVoltage_Set(2,this.value)"></td>
-          <td> <input id="ControlVoltage_Set3" maxlength="4" size="4" value="wait" onchange="chgControlVoltage_Set(3,this.value)"></td>
-          <td> <input id="ControlVoltage_Set4" maxlength="4" size="4" value="wait" onchange="chgControlVoltage_Set(4,this.value)"></td>
-          <td> <input id="ControlVoltage_Set5" maxlength="4" size="4" value="wait" onchange="chgControlVoltage_Set(5,this.value)"></td>
-          <td> <input id="ControlVoltage_Set6" maxlength="4" size="4" value="wait" onchange="chgControlVoltage_Set(6,this.value)"></td>
-          <td> <input id="ControlVoltage_Set7" maxlength="4" size="4" value="wait" onchange="chgControlVoltage_Set(7,this.value)"></td>
-          <td> <input id="ControlVoltage_Set8" maxlength="4" size="4" value="wait" onchange="chgControlVoltage_Set(8,this.value)"></td>
-        </tr>
+          <tr>
+            <td>ControlVoltage_Set [V]</td>
+            <td> <input id="ControlVoltage_Set0" maxlength="4" size="4" value="all"  onchange="chgControlVoltage_Set(0,this.value)"></td>
+            <td> <input id="ControlVoltage_Set1" maxlength="4" size="4" value="wait" onchange="chgControlVoltage_Set(1,this.value)"></td>
+            <td> <input id="ControlVoltage_Set2" maxlength="4" size="4" value="wait" onchange="chgControlVoltage_Set(2,this.value)"></td>
+            <td> <input id="ControlVoltage_Set3" maxlength="4" size="4" value="wait" onchange="chgControlVoltage_Set(3,this.value)"></td>
+            <td> <input id="ControlVoltage_Set4" maxlength="4" size="4" value="wait" onchange="chgControlVoltage_Set(4,this.value)"></td>
+            <td> <input id="ControlVoltage_Set5" maxlength="4" size="4" value="wait" onchange="chgControlVoltage_Set(5,this.value)"></td>
+            <td> <input id="ControlVoltage_Set6" maxlength="4" size="4" value="wait" onchange="chgControlVoltage_Set(6,this.value)"></td>
+            <td> <input id="ControlVoltage_Set7" maxlength="4" size="4" value="wait" onchange="chgControlVoltage_Set(7,this.value)"></td>
+            <td> <input id="ControlVoltage_Set8" maxlength="4" size="4" value="wait" onchange="chgControlVoltage_Set(8,this.value)"></td>
+          </tr>
 
-        <tr>
-          <td> Temp_Set [C] </td>
-          <td> <input id="Temp_Set0" maxlength="4" size="5" value="all"  onchange="chgTemp_Set(0,this.value)"> </td>
-          <td> <input id="Temp_Set1" maxlength="4" size="5" value="wait" onchange="chgTemp_Set(1,this.value)"> </td>
-          <td> <input id="Temp_Set2" maxlength="4" size="5" value="wait" onchange="chgTemp_Set(2,this.value)"> </td>
-          <td> <input id="Temp_Set3" maxlength="4" size="5" value="wait" onchange="chgTemp_Set(3,this.value)"> </td>
-          <td> <input id="Temp_Set4" maxlength="4" size="5" value="wait" onchange="chgTemp_Set(4,this.value)"> </td>
-          <td> <input id="Temp_Set5" maxlength="4" size="5" value="wait" onchange="chgTemp_Set(5,this.value)"> </td>
-          <td> <input id="Temp_Set6" maxlength="4" size="5" value="wait" onchange="chgTemp_Set(6,this.value)"> </td>
-          <td> <input id="Temp_Set7" maxlength="4" size="5" value="wait" onchange="chgTemp_Set(7,this.value)"> </td>
-          <td> <input id="Temp_Set8" maxlength="4" size="5" value="wait" onchange="chgTemp_Set(8,this.value)"> </td>
-        </tr>
+          <tr>
+            <td> Temp_Set [°C] </td>
+            <td> <input id="Temp_Set0" maxlength="4" size="5" value="all"  onchange="chgTemp_Set(0,this.value)"> </td>
+            <td> <input id="Temp_Set1" maxlength="4" size="5" value="wait" onchange="chgTemp_Set(1,this.value)"> </td>
+            <td> <input id="Temp_Set2" maxlength="4" size="5" value="wait" onchange="chgTemp_Set(2,this.value)"> </td>
+            <td> <input id="Temp_Set3" maxlength="4" size="5" value="wait" onchange="chgTemp_Set(3,this.value)"> </td>
+            <td> <input id="Temp_Set4" maxlength="4" size="5" value="wait" onchange="chgTemp_Set(4,this.value)"> </td>
+            <td> <input id="Temp_Set5" maxlength="4" size="5" value="wait" onchange="chgTemp_Set(5,this.value)"> </td>
+            <td> <input id="Temp_Set6" maxlength="4" size="5" value="wait" onchange="chgTemp_Set(6,this.value)"> </td>
+            <td> <input id="Temp_Set7" maxlength="4" size="5" value="wait" onchange="chgTemp_Set(7,this.value)"> </td>
+            <td> <input id="Temp_Set8" maxlength="4" size="5" value="wait" onchange="chgTemp_Set(8,this.value)"> </td>
+          </tr>
 
-        <tr>
-          <td>Temp_M [deg C]</td>
-          <td> </td>
-          <td id="Temp_M1">wait </td>
-          <td id="Temp_M2">wait </td>
-          <td id="Temp_M3">wait </td>
-          <td id="Temp_M4">wait </td>
-          <td id="Temp_M5">wait </td>
-          <td id="Temp_M6">wait </td>
-          <td id="Temp_M7">wait </td>
-          <td id="Temp_M8">wait </td>
-        </tr>
+          <tr>
+            <td>Temp_M [°C]</td>
+            <td> </td>
+            <td id="Temp_M1">wait </td>
+            <td id="Temp_M2">wait </td>
+            <td id="Temp_M3">wait </td>
+            <td id="Temp_M4">wait </td>
+            <td id="Temp_M5">wait </td>
+            <td id="Temp_M6">wait </td>
+            <td id="Temp_M7">wait </td>
+            <td id="Temp_M8">wait </td>
+          </tr>
 
-        <tr>
-          <td>Errorstate (click for details)</td>
-          <td><button id="ClearTECError" disabled>Clear</button></td>
-          <td><button id="ErrorState1" disabled>wait </button></td>
-          <td><button id="ErrorState2" disabled>wait </button></td>
-          <td><button id="ErrorState3" disabled>wait </button></td>
-          <td><button id="ErrorState4" disabled>wait </button></td>
-          <td><button id="ErrorState5" disabled>wait </button></td>
-          <td><button id="ErrorState6" disabled>wait </button></td>
-          <td><button id="ErrorState7" disabled>wait </button></td>
-          <td><button id="ErrorState8" disabled>wait </button></td>
-        </tr>
+          <tr>
+            <td>Errorstate (click for details)</td>
+            <td><button id="ClearTECError" disabled>Clear</button></td>
+            <td><button id="ErrorState1" disabled>wait </button></td>
+            <td><button id="ErrorState2" disabled>wait </button></td>
+            <td><button id="ErrorState3" disabled>wait </button></td>
+            <td><button id="ErrorState4" disabled>wait </button></td>
+            <td><button id="ErrorState5" disabled>wait </button></td>
+            <td><button id="ErrorState6" disabled>wait </button></td>
+            <td><button id="ErrorState7" disabled>wait </button></td>
+            <td><button id="ErrorState8" disabled>wait </button></td>
+          </tr>
+        </table>
+      </div>
 
-        <tr>
-          <td>Supply_U</td>
-          <td> </td>
-          <td id="Supply_U1">wait </td>
-          <td id="Supply_U2">wait </td>
-          <td id="Supply_U3">wait </td>
-          <td id="Supply_U4">wait </td>
-          <td id="Supply_U5">wait </td>
-          <td id="Supply_U6">wait </td>
-          <td id="Supply_U7">wait </td>
-          <td id="Supply_U8">wait </td>
-        </tr>
+      <details>
+        <summary>Expert Details</summary>
+        <div class="table-wrapper">
+          <table class="w3-table">
+            <tr>
+              <th>Parameter</th>
+              <th>all</th>
+              <th>TEC 1</th>
+              <th>TEC 2</th>
+              <th>TEC 3</th>
+              <th>TEC 4</th>
+              <th>TEC 5</th>
+              <th>TEC 6</th>
+              <th>TEC 7</th>
+              <th>TEC 8</th>
+            </tr>
+            <tr>
+              <td>Supply_U [V]</td>
+              <td> </td>
+              <td id="Supply_U1">wait </td>
+              <td id="Supply_U2">wait </td>
+              <td id="Supply_U3">wait </td>
+              <td id="Supply_U4">wait </td>
+              <td id="Supply_U5">wait </td>
+              <td id="Supply_U6">wait </td>
+              <td id="Supply_U7">wait </td>
+              <td id="Supply_U8">wait </td>
+            </tr>
 
-        <tr>
-          <td>Supply_P</td>
-          <td> </td>
-          <td id="Supply_P1">wait </td>
-          <td id="Supply_P2">wait </td>
-          <td id="Supply_P3">wait </td>
-          <td id="Supply_P4">wait </td>
-          <td id="Supply_P5">wait </td>
-          <td id="Supply_P6">wait </td>
-          <td id="Supply_P7">wait </td>
-          <td id="Supply_P8">wait </td>
-        </tr>
+            <tr>
+              <td>Supply_P [W]</td>
+              <td> </td>
+              <td id="Supply_P1">wait </td>
+              <td id="Supply_P2">wait </td>
+              <td id="Supply_P3">wait </td>
+              <td id="Supply_P4">wait </td>
+              <td id="Supply_P5">wait </td>
+              <td id="Supply_P6">wait </td>
+              <td id="Supply_P7">wait </td>
+              <td id="Supply_P8">wait </td>
+            </tr>
 
-        <tr>
-          <td>Peltier_U</td>
-          <td> </td>
-          <td id="Peltier_U1">wait </td>
-          <td id="Peltier_U2">wait </td>
-          <td id="Peltier_U3">wait </td>
-          <td id="Peltier_U4">wait </td>
-          <td id="Peltier_U5">wait </td>
-          <td id="Peltier_U6">wait </td>
-          <td id="Peltier_U7">wait </td>
-          <td id="Peltier_U8">wait </td>
-        </tr>
+            <tr>
+              <td>Peltier_U [V]</td>
+              <td> </td>
+              <td id="Peltier_U1">wait </td>
+              <td id="Peltier_U2">wait </td>
+              <td id="Peltier_U3">wait </td>
+              <td id="Peltier_U4">wait </td>
+              <td id="Peltier_U5">wait </td>
+              <td id="Peltier_U6">wait </td>
+              <td id="Peltier_U7">wait </td>
+              <td id="Peltier_U8">wait </td>
+            </tr>
 
-        <tr>
-          <td>Peltier_P</td>
-          <td> </td>
-          <td id="Peltier_P1">wait </td>
-          <td id="Peltier_P2">wait </td>
-          <td id="Peltier_P3">wait </td>
-          <td id="Peltier_P4">wait </td>
-          <td id="Peltier_P5">wait </td>
-          <td id="Peltier_P6">wait </td>
-          <td id="Peltier_P7">wait </td>
-          <td id="Peltier_P8">wait </td>
-        </tr>
+            <tr>
+              <td>Peltier_P [W]</td>
+              <td> </td>
+              <td id="Peltier_P1">wait </td>
+              <td id="Peltier_P2">wait </td>
+              <td id="Peltier_P3">wait </td>
+              <td id="Peltier_P4">wait </td>
+              <td id="Peltier_P5">wait </td>
+              <td id="Peltier_P6">wait </td>
+              <td id="Peltier_P7">wait </td>
+              <td id="Peltier_P8">wait </td>
+            </tr>
 
-        <tr>
-          <td>Peltier_I</td>
-          <td> </td>
-          <td id="Peltier_I1">wait </td>
-          <td id="Peltier_I2">wait </td>
-          <td id="Peltier_I3">wait </td>
-          <td id="Peltier_I4">wait </td>
-          <td id="Peltier_I5">wait </td>
-          <td id="Peltier_I6">wait </td>
-          <td id="Peltier_I7">wait </td>
-          <td id="Peltier_I8">wait </td>
-        </tr>
+            <tr>
+              <td>Peltier_I [A]</td>
+              <td> </td>
+              <td id="Peltier_I1">wait </td>
+              <td id="Peltier_I2">wait </td>
+              <td id="Peltier_I3">wait </td>
+              <td id="Peltier_I4">wait </td>
+              <td id="Peltier_I5">wait </td>
+              <td id="Peltier_I6">wait </td>
+              <td id="Peltier_I7">wait </td>
+              <td id="Peltier_I8">wait </td>
+            </tr>
 
-        <tr>
-          <td>Peltier_R</td>
-          <td> </td>
-          <td id="Peltier_R1">wait </td>
-          <td id="Peltier_R2">wait </td>
-          <td id="Peltier_R3">wait </td>
-          <td id="Peltier_R4">wait </td>
-          <td id="Peltier_R5">wait </td>
-          <td id="Peltier_R6">wait </td>
-          <td id="Peltier_R7">wait </td>
-          <td id="Peltier_R8">wait </td>
-        </tr>
+            <tr>
+              <td>Peltier_R [Ω]</td>
+              <td> </td>
+              <td id="Peltier_R1">wait </td>
+              <td id="Peltier_R2">wait </td>
+              <td id="Peltier_R3">wait </td>
+              <td id="Peltier_R4">wait </td>
+              <td id="Peltier_R5">wait </td>
+              <td id="Peltier_R6">wait </td>
+              <td id="Peltier_R7">wait </td>
+              <td id="Peltier_R8">wait </td>
+            </tr>
 
-        <tr>
-          <td>PID_kp</td>
-          <td> <input id="PID_kp0" maxlength="4" size="4" value="all"  onchange="chgPID_kp(0,this.value)"></td>
-          <td> <input id="PID_kp1" maxlength="4" size="4" value="wait" onchange="chgPID_kp(1,this.value)"></td>
-          <td> <input id="PID_kp2" maxlength="4" size="4" value="wait" onchange="chgPID_kp(2,this.value)"></td>
-          <td> <input id="PID_kp3" maxlength="4" size="4" value="wait" onchange="chgPID_kp(3,this.value)"></td>
-          <td> <input id="PID_kp4" maxlength="4" size="4" value="wait" onchange="chgPID_kp(4,this.value)"></td>
-          <td> <input id="PID_kp5" maxlength="4" size="4" value="wait" onchange="chgPID_kp(5,this.value)"></td>
-          <td> <input id="PID_kp6" maxlength="4" size="4" value="wait" onchange="chgPID_kp(6,this.value)"></td>
-          <td> <input id="PID_kp7" maxlength="4" size="4" value="wait" onchange="chgPID_kp(7,this.value)"></td>
-          <td> <input id="PID_kp8" maxlength="4" size="4" value="wait" onchange="chgPID_kp(8,this.value)"></td>
-        </tr>
+            <tr>
+              <td>PID_kp</td>
+              <td> <input id="PID_kp0" maxlength="4" size="4" value="all"  onchange="chgPID_kp(0,this.value)"></td>
+              <td> <input id="PID_kp1" maxlength="4" size="4" value="wait" onchange="chgPID_kp(1,this.value)"></td>
+              <td> <input id="PID_kp2" maxlength="4" size="4" value="wait" onchange="chgPID_kp(2,this.value)"></td>
+              <td> <input id="PID_kp3" maxlength="4" size="4" value="wait" onchange="chgPID_kp(3,this.value)"></td>
+              <td> <input id="PID_kp4" maxlength="4" size="4" value="wait" onchange="chgPID_kp(4,this.value)"></td>
+              <td> <input id="PID_kp5" maxlength="4" size="4" value="wait" onchange="chgPID_kp(5,this.value)"></td>
+              <td> <input id="PID_kp6" maxlength="4" size="4" value="wait" onchange="chgPID_kp(6,this.value)"></td>
+              <td> <input id="PID_kp7" maxlength="4" size="4" value="wait" onchange="chgPID_kp(7,this.value)"></td>
+              <td> <input id="PID_kp8" maxlength="4" size="4" value="wait" onchange="chgPID_kp(8,this.value)"></td>
+            </tr>
 
-        <tr>
-          <td>PID_ki</td>
-          <td> <input id="PID_ki0" maxlength="4" size="4" value="all"  onchange="chgPID_ki(0,this.value)"></td>
-          <td> <input id="PID_ki1" maxlength="4" size="4" value="wait" onchange="chgPID_ki(1,this.value)"></td>
-          <td> <input id="PID_ki2" maxlength="4" size="4" value="wait" onchange="chgPID_ki(2,this.value)"></td>
-          <td> <input id="PID_ki3" maxlength="4" size="4" value="wait" onchange="chgPID_ki(3,this.value)"></td>
-          <td> <input id="PID_ki4" maxlength="4" size="4" value="wait" onchange="chgPID_ki(4,this.value)"></td>
-          <td> <input id="PID_ki5" maxlength="4" size="4" value="wait" onchange="chgPID_ki(5,this.value)"></td>
-          <td> <input id="PID_ki6" maxlength="4" size="4" value="wait" onchange="chgPID_ki(6,this.value)"></td>
-          <td> <input id="PID_ki7" maxlength="4" size="4" value="wait" onchange="chgPID_ki(7,this.value)"></td>
-          <td> <input id="PID_ki8" maxlength="4" size="4" value="wait" onchange="chgPID_ki(8,this.value)"></td>
-        </tr>
+            <tr>
+              <td>PID_ki</td>
+              <td> <input id="PID_ki0" maxlength="4" size="4" value="all"  onchange="chgPID_ki(0,this.value)"></td>
+              <td> <input id="PID_ki1" maxlength="4" size="4" value="wait" onchange="chgPID_ki(1,this.value)"></td>
+              <td> <input id="PID_ki2" maxlength="4" size="4" value="wait" onchange="chgPID_ki(2,this.value)"></td>
+              <td> <input id="PID_ki3" maxlength="4" size="4" value="wait" onchange="chgPID_ki(3,this.value)"></td>
+              <td> <input id="PID_ki4" maxlength="4" size="4" value="wait" onchange="chgPID_ki(4,this.value)"></td>
+              <td> <input id="PID_ki5" maxlength="4" size="4" value="wait" onchange="chgPID_ki(5,this.value)"></td>
+              <td> <input id="PID_ki6" maxlength="4" size="4" value="wait" onchange="chgPID_ki(6,this.value)"></td>
+              <td> <input id="PID_ki7" maxlength="4" size="4" value="wait" onchange="chgPID_ki(7,this.value)"></td>
+              <td> <input id="PID_ki8" maxlength="4" size="4" value="wait" onchange="chgPID_ki(8,this.value)"></td>
+            </tr>
 
-        <tr>
-          <td>PID_kd</td>
-          <td> <input id="PID_kd0" maxlength="4" size="4" value="all"  onchange="chgPID_kd(0,this.value)"></td>
-          <td> <input id="PID_kd1" maxlength="4" size="4" value="wait" onchange="chgPID_kd(1,this.value)"></td>
-          <td> <input id="PID_kd2" maxlength="4" size="4" value="wait" onchange="chgPID_kd(2,this.value)"></td>
-          <td> <input id="PID_kd3" maxlength="4" size="4" value="wait" onchange="chgPID_kd(3,this.value)"></td>
-          <td> <input id="PID_kd4" maxlength="4" size="4" value="wait" onchange="chgPID_kd(4,this.value)"></td>
-          <td> <input id="PID_kd5" maxlength="4" size="4" value="wait" onchange="chgPID_kd(5,this.value)"></td>
-          <td> <input id="PID_kd6" maxlength="4" size="4" value="wait" onchange="chgPID_kd(6,this.value)"></td>
-          <td> <input id="PID_kd7" maxlength="4" size="4" value="wait" onchange="chgPID_kd(7,this.value)"></td>
-          <td> <input id="PID_kd8" maxlength="4" size="4" value="wait" onchange="chgPID_kd(8,this.value)"></td>
-        </tr>
+            <tr>
+              <td>PID_kd</td>
+              <td> <input id="PID_kd0" maxlength="4" size="4" value="all"  onchange="chgPID_kd(0,this.value)"></td>
+              <td> <input id="PID_kd1" maxlength="4" size="4" value="wait" onchange="chgPID_kd(1,this.value)"></td>
+              <td> <input id="PID_kd2" maxlength="4" size="4" value="wait" onchange="chgPID_kd(2,this.value)"></td>
+              <td> <input id="PID_kd3" maxlength="4" size="4" value="wait" onchange="chgPID_kd(3,this.value)"></td>
+              <td> <input id="PID_kd4" maxlength="4" size="4" value="wait" onchange="chgPID_kd(4,this.value)"></td>
+              <td> <input id="PID_kd5" maxlength="4" size="4" value="wait" onchange="chgPID_kd(5,this.value)"></td>
+              <td> <input id="PID_kd6" maxlength="4" size="4" value="wait" onchange="chgPID_kd(6,this.value)"></td>
+              <td> <input id="PID_kd7" maxlength="4" size="4" value="wait" onchange="chgPID_kd(7,this.value)"></td>
+              <td> <input id="PID_kd8" maxlength="4" size="4" value="wait" onchange="chgPID_kd(8,this.value)"></td>
+            </tr>
+          </table>
+        </div>
+      </details>
+    </div>
 
-      </table>
+    <div>
+      <details>
+        <summary>MQTT History</summary>
+        <div style="background-color:LightSteelBlue; padding:6px; margin-top:4px;">
+          <label for="historyTopic">MQTT history topic:</label>
+          <select id="historyTopic">
+            <option value="all">all</option>
+            <option value="ctrlTessie">ctrlTessie</option>
+            <option value="monTessie">monTessie</option>
+          </select>
+          <label for="historyHours">hours:</label>
+          <input id="historyHours" type="number" min="0.1" step="0.5" value="2" style="width:70px;">
+          <label for="historyLimit">limit:</label>
+          <input id="historyLimit" type="number" min="1" step="100" value="2000" style="width:90px;">
+          <button id="historyRefresh">Refresh history</button>
+          <span id="historyMeta" style="margin-left:8px; font-size:9pt;"></span>
+          <textarea id="historyArea" class="scrollabletextbox" style="font-size: 9pt; width: 100%; max-width: 100%; margin-top:4px;"></textarea>
+        </div>
+      </details>
     </div>
 
     <div id="tec1pop" popover>
@@ -482,6 +613,13 @@
       const getcsv = document.getElementById('getcsv');
       const saveFW = document.getElementById('saveFW');
       const loadFW = document.getElementById('loadFW');
+      const startReconditioning = document.getElementById('startReconditioning');
+      const historyTopic = document.getElementById('historyTopic');
+      const historyHours = document.getElementById('historyHours');
+      const historyLimit = document.getElementById('historyLimit');
+      const historyRefresh = document.getElementById('historyRefresh');
+      const historyArea = document.getElementById('historyArea');
+      const historyMeta = document.getElementById('historyMeta');
 
       let tessieWebVersion = "unset";
       var el = document.getElementById('versionWebField');
@@ -515,6 +653,54 @@
       });
 
       getcsv.addEventListener('click', (e) => {socket.emit('getcsv'); });
+
+      startReconditioning.addEventListener('click', (e) => {
+          startReconditioning.style.backgroundColor = 'darkgray';
+          socket.emit('startReconditioning', 'startReconditioning');
+      });
+
+      async function loadMqttHistory() {
+          const topic = historyTopic.value;
+          const hours = historyHours.value || '2';
+          const limit = historyLimit.value || '2000';
+          const params = new URLSearchParams({ topic: topic, hours: hours, limit: limit });
+          historyMeta.innerHTML = 'loading...';
+          try {
+              const response = await fetch('/api/mqtt/history?' + params.toString());
+              if (!response.ok) {
+                  throw new Error('HTTP ' + response.status);
+              }
+              const data = await response.json();
+              const lines = data.entries.map((entry) => {
+                  const tsLocal = formatHistoryTimestamp(entry.tsMs || entry.tsIso);
+                  return tsLocal + ' [' + entry.topic + '] ' + entry.payload;
+              });
+              historyArea.value = lines.join('\n');
+              historyArea.scrollTop = historyArea.scrollHeight;
+              historyMeta.innerHTML = 'loaded ' + data.entries.length
+                  + ' entries (topic=' + data.meta.topic
+                  + ', hours=' + data.meta.hours
+                  + ', available=' + data.meta.available + ')';
+          } catch (err) {
+              historyMeta.innerHTML = 'history load failed: ' + err.message;
+          }
+      }
+
+      function formatHistoryTimestamp(tsRaw) {
+          const d = new Date(tsRaw);
+          if (Number.isNaN(d.getTime())) return 'invalid-date';
+          const yyyy = d.getFullYear();
+          const mm = String(d.getMonth() + 1).padStart(2, '0');
+          const dd = String(d.getDate()).padStart(2, '0');
+          const hh = String(d.getHours()).padStart(2, '0');
+          const mi = String(d.getMinutes()).padStart(2, '0');
+          const ss = String(d.getSeconds()).padStart(2, '0');
+          return `${yyyy}/${mm}/${dd} ${hh}:${mi}:${ss}`;
+      }
+
+      historyRefresh.addEventListener('click', (e) => {
+          loadMqttHistory();
+      });
 
       socket.on('envString', (msg) => {
           const snumbers = msg.toString().replace('Env = ', '');
@@ -586,6 +772,10 @@
           if (vNumbers.length > 7) {
               statusThrottle =  parseInt(parseInt(vNumbers[7].replace("T", "")));
           }
+          let statusHeater = -1;
+          if (vNumbers.length > 8) {
+              statusHeater = parseInt(vNumbers[8].replace("H", ""));
+          }
           
           var el = document.getElementById('LidStatus');
           if (1 == lidStatus) {
@@ -630,6 +820,30 @@
               el.checked = true;
           } else {
               el.checked = false;
+          }
+          
+          // -- Handle reconditioning button status and alert
+          console.log('Heater status:', statusHeater);
+          // Store heater status globally for alert updates
+          window.currentHeaterStatus = statusHeater;
+          
+          if (statusHeater > 0) {
+              // Reconditioning is active - keep button gray
+              startReconditioning.style.backgroundColor = 'darkgray';
+              // Show blocking alert if not already shown
+              const alert = document.getElementById('reconditioningAlert');
+              if (alert && !alert.classList.contains('show')) {
+                  showReconditioningAlert();
+              } else if (alert && alert.classList.contains('show')) {
+                  // Update alert status if already shown
+                  updateAlertStatus();
+              }
+          } else {
+              // Reconditioning is finished - reset button to normal
+              startReconditioning.style.backgroundColor = '#FF6B6B';
+              // Hide alert if it exists
+              console.log('Heater status is 0, attempting to hide alert');
+              hideReconditioningAlert();
           }
           
           if ("1" == greenLight) {
@@ -918,6 +1132,7 @@
 
       let msg2 = "getfwverstring";
       socket.emit('getfwverstring', msg2);
+      loadMqttHistory();
 
       function chgControlVoltage_Set(itec, val) {
           let msg = "tec " + itec.toString() + " set ControlVoltage_Set " + val.toString();
@@ -1139,6 +1354,46 @@
       document.getElementById("ClearTECError").addEventListener('click', (e) => {
           socket.emit('ClearError');
       });
+
+      // -- Reconditioning Alert Functions
+      function showReconditioningAlert() {
+          const alert = document.getElementById('reconditioningAlert');
+          if (alert) {
+              // Update status information
+              updateAlertStatus();
+              alert.classList.add('show');
+              // Prevent scrolling when alert is shown
+              document.body.style.overflow = 'hidden';
+              console.log('Reconditioning alert shown');
+          }
+      }
+
+      function updateAlertStatus() {
+          // Get current air temperature from the display
+          const airTempElement = document.getElementById('TempAir');
+          const airTemp = airTempElement ? airTempElement.innerHTML : '--';
+          
+          // Get current heater status (we'll update this from the status check)
+          const heaterStatusElement = document.getElementById('alertHeaterStatus');
+          if (heaterStatusElement) {
+              heaterStatusElement.innerHTML = window.currentHeaterStatus || '--';
+          }
+          
+          // Update air temperature in alert
+          const alertAirTempElement = document.getElementById('alertAirTemp');
+          if (alertAirTempElement) {
+              alertAirTempElement.innerHTML = airTemp;
+          }
+      }
+
+      function hideReconditioningAlert() {
+          const alert = document.getElementById('reconditioningAlert');
+          if (alert) {
+              alert.classList.remove('show');
+              // Restore scrolling when alert is hidden
+              document.body.style.overflow = 'auto';
+          }
+      }
 
     </script>
 

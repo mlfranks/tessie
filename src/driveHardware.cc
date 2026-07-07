@@ -4,6 +4,8 @@
 #include <sstream>
 #include <string>
 #include <cstdlib>
+#include <algorithm>
+#include <cctype>
 
 #include <fstream>
 #include <iomanip>
@@ -41,7 +43,7 @@
 // -- define GPIO pins for side lights and INTL/PSEN
 //     physical 11/13/15 LED pins  GPIO 17/27/22
 //     physical 16       INTL      GPIO 23
-//     physical 18       PSEN      GPIO 24
+//     physical 18       PSEN      GPIO 24    // this is 3.3V enable for central PCB
 
 #define GPIORED   17
 #define GPIOYELLO 27
@@ -50,6 +52,8 @@
 #define GPIOINT   23
 
 #define I2CBUS    0
+
+#define HEATER_MAX_STATUS 180
 
 #include <chrono>
 
@@ -68,6 +72,7 @@ driveHardware::driveHardware(tLog& x, int verbose): fLOG(x) {
   fCANReg    = 0;
   fCANVal    = 0.;
   fVerbose   = verbose;
+  //fVerbose   = 6;
   QDateTime dt = QDateTime::currentDateTime();
   fDateAndTime = dt.date().toString() + "  " +  dt.time().toString("hh:mm");
 
@@ -82,6 +87,8 @@ driveHardware::driveHardware(tLog& x, int verbose): fLOG(x) {
   fBadFlowMeterReading = 0;
   fThrottleStatus = 0;
   fHeaterStatus = 0; 
+  fReconditioning = 0;
+  fReconditioningWaitTime = 0;
 
   fTrafficRed = fTrafficYellow = fTrafficGreen = 0; 
   
@@ -90,6 +97,7 @@ driveHardware::driveHardware(tLog& x, int verbose): fLOG(x) {
   fMilli10  = std::chrono::milliseconds(10);
   fMilli20  = std::chrono::milliseconds(20);
   fMilli100 = std::chrono::milliseconds(100);
+  fMilli500 = std::chrono::milliseconds(500);
 
   fCsvFileName = "tessie.csv";
   fLOG(INFO, stringstream("open" + fCsvFileName).str());
@@ -110,6 +118,9 @@ driveHardware::driveHardware(tLog& x, int verbose): fLOG(x) {
   }
 
   initTECData();
+  for (int itec = 1; itec <= 8; ++itec) {
+    fTECTurnedOn[itec] = false;
+  }
 
   fSHT85Temp = -99.;
   fSHT85RH   = -99.;
@@ -139,6 +150,8 @@ driveHardware::driveHardware(tLog& x, int verbose): fLOG(x) {
   fLidReading      = -99999.;
   
 #ifdef PI
+  fSw = -1;
+  fSr = -1;
   fPiGPIO = pigpio_start(NULL, NULL);
 
   cout << "pigpio_start() = " << fPiGPIO << endl;
@@ -161,101 +174,43 @@ driveHardware::driveHardware(tLog& x, int verbose): fLOG(x) {
   cout << "initial readout air temperature" << endl;
   readAirTemperature();
 
-  // -- write CAN socket
-  memset(&fFrameW, 0, sizeof(struct can_frame));
-  fSw = socket(PF_CAN, SOCK_RAW, CAN_RAW);
-  if (fSw < 0) {
-    perror("socket PF_CAN failed");
-    return;
-  }
-
-  strcpy(fIfrW.ifr_name, "can0");
-  int ret = ioctl(fSw, SIOCGIFINDEX, &fIfrW);
-  if (ret < 0) {
-    perror("ioctl failed");
-    return;
-  }
-
-  fAddrW.can_family = AF_CAN;
-  fAddrW.can_ifindex = fIfrW.ifr_ifindex;
-  ret = bind(fSw, (struct sockaddr *)&fAddrW, sizeof(fAddrW));
-  if (ret < 0) {
-    perror("bind failed");
-    return;
-  }
-
-  setsockopt(fSw, SOL_CAN_RAW, CAN_RAW_FILTER, NULL, 0);
-
-
-  // -- read CAN socket
-  memset(&fFrameR, 0, sizeof(struct can_frame));
-  fSr = socket(PF_CAN, SOCK_RAW, CAN_RAW);
-  if (fSr < 0) {
-    perror("socket PF_CAN failed");
-    return;
-  }
-
-  strcpy(fIfrR.ifr_name, "can0");
-  ret = ioctl(fSr, SIOCGIFINDEX, &fIfrR);
-  if (ret < 0) {
-    perror("ioctl failed");
-    return;
-  }
-
-  fAddrR.can_family = AF_CAN;
-  fAddrR.can_ifindex = fIfrR.ifr_ifindex;
-  ret = bind(fSr, (struct sockaddr *)&fAddrR, sizeof(fAddrR));
-  if (ret < 0) {
-    perror("bind failed");
-    return;
-  }
-
-  //4.Define receive rules
-  //  struct can_filter rfilter[1];
-  //  rfilter[0].can_id = 0x000;
-  //  rfilter[0].can_mask = CAN_SFF_MASK;
-  // -- this does not work with the new CANBUS protocol?!
-  //  setsockopt(fSr, SOL_CAN_RAW, CAN_RAW_FILTER, &rfilter, sizeof(rfilter));
-
-
-  // -- add timeout?
-  // https://stackoverflow.com/questions/2876024/linux-is-there-a-read-or-recv-from-socket-with-timeout
-  // struct timeval tv;
-  // tv.tv_sec = 0;
-  // tv.tv_usec = 1000; // 1 millisecond
-  // setsockopt(fSr, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
-
-  if (1) {
-    // https://stackoverflow.com/questions/13547721/udp-socket-set-timeout
-    struct timeval tv;
-    tv.tv_sec = 0;
-    tv.tv_usec = 10; // 0.1 millisecond
-    if (setsockopt(fSr /*rcv_sock*/, SOL_SOCKET, SO_RCVTIMEO, &tv,sizeof(tv)) < 0) {
-      perror("Error in setting up time out");
-    }
-  }
+  if (!initCANSockets()) return;
 
   fOldLidStatus = 2; // initial value
   checkLid();
 
   // -- Load TEC parameters from FLASH
   loadFromFlash();
+  std::this_thread::sleep_for(fMilli100);
+
 
   // -- read firmware version (have it printed) and make sure that all TECs have the same version
-  int version1(getSWVersion(1)), version(-1);
+  int version1 = getSWVersion(1);
+  fLOG(INFO, "TEC 1 firmware version = " + to_string(version1));
+
+  int version(-1);
   bool versionOK(true);
   for (int i = 2; i <= 8; ++i) {
     version = getSWVersion(i);
+    fLOG(INFO, "TEC " + to_string(i) + " firmware version = " + to_string(version));
     if (version != version1) {
       versionOK = false;
     }
   }
   if (!versionOK) {  
     fStatusString = "TEC firmware mismatch";
-    shutDown();
   } else {
-    fStatusString = "initialization OK";
+    if (version < 12) {
+      fLOG(INFO, "Upgrade TEC f/w! Current version = " + to_string(version));
+      fStatusString = "TEC f/w < 12";
+      versionOK = false;
+    }
   }
+
+  fVersionOK = versionOK;
+
+  fStatusString = "initialization OK";
+
 
 #endif
 
@@ -329,6 +284,81 @@ driveHardware::~driveHardware() {
 }
 
 
+#ifdef PI
+// ----------------------------------------------------------------------
+bool driveHardware::initCANSockets() {
+  fLOG(INFO, "initCANSockets() start");
+  // -- write CAN socket
+  memset(&fFrameW, 0, sizeof(struct can_frame));
+  fSw = socket(PF_CAN, SOCK_RAW, CAN_RAW);
+  if (fSw < 0) {
+    perror("socket PF_CAN failed");
+    return false;
+  }
+
+  strcpy(fIfrW.ifr_name, "can0");
+  int ret = ioctl(fSw, SIOCGIFINDEX, &fIfrW);
+  if (ret < 0) {
+    perror("ioctl failed");
+    return false;
+  }
+
+  fAddrW.can_family = AF_CAN;
+  fAddrW.can_ifindex = fIfrW.ifr_ifindex;
+  ret = bind(fSw, (struct sockaddr *)&fAddrW, sizeof(fAddrW));
+  if (ret < 0) {
+    perror("bind failed");
+    return false;
+  }
+
+  setsockopt(fSw, SOL_CAN_RAW, CAN_RAW_FILTER, NULL, 0);
+
+  // -- read CAN socket
+  memset(&fFrameR, 0, sizeof(struct can_frame));
+  fSr = socket(PF_CAN, SOCK_RAW, CAN_RAW);
+  if (fSr < 0) {
+    perror("socket PF_CAN failed");
+    return false;
+  }
+
+  strcpy(fIfrR.ifr_name, "can0");
+  ret = ioctl(fSr, SIOCGIFINDEX, &fIfrR);
+  if (ret < 0) {
+    perror("ioctl failed");
+    return false;
+  }
+
+  fAddrR.can_family = AF_CAN;
+  fAddrR.can_ifindex = fIfrR.ifr_ifindex;
+  ret = bind(fSr, (struct sockaddr *)&fAddrR, sizeof(fAddrR));
+  if (ret < 0) {
+    perror("bind failed");
+    return false;
+  }
+
+  // -- add timeout
+  struct timeval tv;
+  tv.tv_sec = 0;
+  // Give broadcast replies a little more time to arrive.
+  tv.tv_usec = 10000; // 10 milliseconds
+  if (setsockopt(fSr, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+    perror("Error in setting up time out");
+  }
+
+  fLOG(INFO, "initCANSockets() success");
+  return true;
+}
+#endif
+
+
+// ----------------------------------------------------------------------
+std::string driveHardware::formatHex(unsigned int value) const {
+  std::ostringstream ss;
+  ss << "0x" << std::uppercase << std::hex << value;
+  return ss.str();
+}
+
+
 // ----------------------------------------------------------------------
 void driveHardware::doWarning(string errmsg, bool nothing) {
 
@@ -374,6 +404,16 @@ void driveHardware::doRun() {
   struct timeval tvVeryOld, tvOld, tvNew;
   gettimeofday(&tvVeryOld, 0);
   gettimeofday(&tvOld, 0);
+  auto stepMs = [this](const char *label, int warnMs, int verbose, void (driveHardware::*fn)()) {
+    struct timeval t0, t1;
+    gettimeofday(&t0, 0);
+    (this->*fn)();
+    gettimeofday(&t1, 0);
+    int dt = diff_ms(t1, t0);
+    if ((dt > warnMs) || (fVerbose > verbose)) {
+      fLOG(INFO, string("timing: ") + label + " took " + to_string(dt) + " ms");
+    }
+  };
 
   fLOG(INFO, "driveHardware::doRun() start loop");
   while (1) {
@@ -398,28 +438,41 @@ void driveHardware::doRun() {
     }
     if (tdiff > 1000.) {
       tvOld = tvNew;
-      if (0) cout << tStamp() << " readAllParamsFromCANPublic(), tdiff = " << tdiff << endl;
+      if (fVerbose > 5) cout << tStamp() << " readAllParamsFromCANPublic(), tdiff = " << tdiff << endl;
       // -- read SHT85 only every 2 seconds!
       if (tdiff2 > 2000) {
-        readAirTemperature();
-        readFlowmeter();
+        stepMs("readAirTemperature", 20, 9, &driveHardware::readAirTemperature);
+        stepMs("readFlowmeter", 50, 9, &driveHardware::readFlowmeter);
         if (MAX_TEMP < 30. && fFlowMeterStatus > -1) {
-          MAX_TEMP = 35.;
+          MAX_TEMP = 40.;
           SAFETY_MAXSHT85TEMP = MAX_TEMP;
           SAFETY_MAXTEMPW     = MAX_TEMP;
           SAFETY_MAXTEMPM     = MAX_TEMP;
           SHUTDOWN_TEMP       = MAX_TEMP;
-          fLOG(INFO, "Flow switch activated. Changed maximum temperatures to 35 degC");
+          fLOG(INFO, "Flow switch activated.  Changed maximum temperatures to 40 degC");
         }
       }
 
       // -- read all parameters from CAN
-      readAllParamsFromCANPublic();
+      stepMs("readAllParamsFromCANPublic", 400, 9, &driveHardware::readAllParamsFromCANPublic);
 
       evtHandler();
 
+      // -- if reconditioning had been started, go there
+      if (fReconditioning > 0) doReconditioning();
+      if (fHeaterStatus == 1) {
+        turnOffValve(1);
+        turnOffValve(0);
+      }
+
+      // -- count dount fHeaterStatus to allow cool down
+      if (0 < fHeaterStatus && fHeaterStatus < HEATER_MAX_STATUS) --fHeaterStatus;
+
       // -- do something with the results
       if (0) cout << tStamp() << " emit signalUpdateHwDisplay tdiff = " << tdiff << endl;
+      if (!fVersionOK) {
+        fStatusString = "TEC f/w < 12";
+      }
       emit signalUpdateHwDisplay();
       dumpCSV();
       dumpMQTT();
@@ -429,12 +482,11 @@ void driveHardware::doRun() {
 
       evtHandler();
 
-      entertainFras();
-      entertainTECs();
+      stepMs("entertainFras", 30, 10, &driveHardware::entertainFras);
+      stepMs("entertainTECs", 30, 10, &driveHardware::entertainTECs);
 
-      checkFan();
-
-      ensureSafety();
+      stepMs("checkFan", 30, 10, &driveHardware::checkFan);
+      stepMs("ensureSafety", 30, 10, &driveHardware::ensureSafety);
 
       if (fThrottleStatus > 0) {
         throttleN2();
@@ -449,8 +501,8 @@ void driveHardware::doRun() {
       // -- about once per minute
       if (0 == cnt%60) {
         stringstream a("RH/T  HYT223 T = " + to_string(fHYT223Temp) + " RH = " + to_string(fHYT223RH)
-                       + "  SHT85 T = " + to_string(fSHT85Temp) + " RH = " + to_string(fSHT85RH)
-                       );
+                       + (fI2CSlaveStatus[I2C_SHT85_ADDR]? ("  SHT85 T = " + to_string(fSHT85Temp) + " RH = " + to_string(fSHT85RH)): "")
+                       + (fHeaterStatus > 0?"  Heater status = " + to_string(fHeaterStatus): ""));
         fLOG(INFO, a.str());
 
       }
@@ -501,11 +553,18 @@ void driveHardware::doRun() {
 
 // ----------------------------------------------------------------------
 void driveHardware::ensureSafety() {
+  // -- if TEC firmware is not OK, get stuck
+  if (!fVersionOK) {
+    fStatusString = "upgrade TEC f/w!";
+    return;
+  }
 
   if (0 == fStopOperations) {
     // fLOG(INFO, "fFlowMeterStatus = " + to_string(fFlowMeterStatus));
     if (0 == fFlowMeterStatus) {
       fStatusString = "turn on chiller!";
+    } else if (fHeaterStatus > 0) {
+      fStatusString = "reconditioning";
     } else {
       fStatusString = "no problem";
     }
@@ -587,18 +646,18 @@ void driveHardware::ensureSafety() {
     emit signalSetBackground("T", "red");
     stopOperations(1);
   }
-  if (fAirTemp > SHUTDOWN_TEMP) {
+  if ((fAirTemp > SHUTDOWN_TEMP) && (0 == fHeaterStatus)) {
     stopOperations(2);
   }
 
   // -- ensure chiller running if at least one TEC is turned on
   if (anyTECRunning()) {
+    greenLight = false;
     if (fFlowMeterStatus < 0) {
       // -- should be handled by temperature checking
     } else {
       if (fFlowMeterStatus < 1) {
       
-        greenLight = false;
         allOK = 2;
         if (0 == fStopOperations) fStatusString = "Turn on chiller!";
         stringstream a("==ERROR== chiller not running, turn it on = ");
@@ -631,7 +690,7 @@ void driveHardware::ensureSafety() {
     stopOperations(4);
   }
 
-  // -- check water temperature
+  // -- check water temperature (derived from TEC8; TEC8 must stay active)
   if (fTECData[8].reg["Temp_W"].value > SAFETY_MAXTEMPW) {
     greenLight = false;
     allOK = 4;
@@ -654,6 +713,7 @@ void driveHardware::ensureSafety() {
 
   // -- check module temperatures (1) value and (2) against dew point
   for (int itec = 1; itec <= 8; ++itec) {
+    if (0 == fActiveTEC[itec]) continue;
     double mtemp = fTECData[itec].reg["Temp_M"].value;
     if (mtemp < 15) {
       greenLight = false;
@@ -713,8 +773,10 @@ void driveHardware::ensureSafety() {
     cout << "allOK = " << allOK << ", alarm condition gone, reset siren and red lamp" << endl;
     cout << "set GPIORED = LOW" << endl;
 #ifdef PI
-    gpio_write(fPiGPIO, GPIORED, 0);
-    fTrafficRed = 0;
+    if (0 == fStopOperations) {
+      gpio_write(fPiGPIO, GPIORED, 0);
+      fTrafficRed = 0;
+    }
 #endif
     if (1 == fLidStatus) {
       if (fOldLidStatus != fLidStatus) {
@@ -747,41 +809,77 @@ void driveHardware::ensureSafety() {
   }
 
 #ifdef PI
-  if (greenLight) {
+  // -- During reconditioning (fHeaterStatus > 0), turn on all traffic lights
+  if (fHeaterStatus > 0) {
     gpio_write(fPiGPIO, GPIOGREEN, 1);
     fTrafficGreen = 1;
-  } else {
-    gpio_write(fPiGPIO, GPIOGREEN, 0);
-    fTrafficGreen = 0; 
-  }
-
-  // -- add yellow blinking light in case fan is off but conditions are not safe
-  if (!getStatusFan()) {
-    if (!greenLight) {
-      // -- need local (static) variable because fTrafficYellow is reset in checkFan()
-      static bool yelloOn(false);
-      if (0 == fStopOperations) fStatusString = "Keep lid closed";
-      if (yelloOn) {
-        gpio_write(fPiGPIO, GPIOYELLO, 0);
-        fTrafficYellow = 0; 
-        yelloOn = false;        
-      } else {
-        gpio_write(fPiGPIO, GPIOYELLO, 1);
-        fTrafficYellow = 1;
-        yelloOn = true;
-      }
-    } else {
-      gpio_write(fPiGPIO, GPIOYELLO, 0);
-      fTrafficYellow = 0;
-    }
-  } else {
     gpio_write(fPiGPIO, GPIOYELLO, 1);
     fTrafficYellow = 1;
+    gpio_write(fPiGPIO, GPIORED, 1);
+    fTrafficRed = 1;
+  } else {
+    // -- Normal traffic light control
+    if (greenLight) {
+      gpio_write(fPiGPIO, GPIOGREEN, 1);
+      fTrafficGreen = 1;
+    } else {
+      gpio_write(fPiGPIO, GPIOGREEN, 0);
+      fTrafficGreen = 0; 
+    }
+
+    // -- add yellow blinking light in case fan is off but conditions are not safe
+    if (!getStatusFan()) {
+      if (!greenLight) {
+        // -- need local (static) variable because fTrafficYellow is reset in checkFan()
+        static bool yelloOn(false);
+        if (0 == fStopOperations) fStatusString = "Keep lid closed";
+        if (yelloOn) {
+          gpio_write(fPiGPIO, GPIOYELLO, 0);
+          fTrafficYellow = 0; 
+          yelloOn = false;        
+        } else {
+          gpio_write(fPiGPIO, GPIOYELLO, 1);
+          fTrafficYellow = 1;
+          yelloOn = true;
+        }
+      } else {
+        gpio_write(fPiGPIO, GPIOYELLO, 0);
+        fTrafficYellow = 0;
+      }
+    } else {
+      gpio_write(fPiGPIO, GPIOYELLO, 1);
+      fTrafficYellow = 1;
+    }
+    
+    // -- Red: alarm (allOK) or latched emergency stop (fStopOperations); not lid-only breakInterlock
+    if ((allOK > 0) || (fStopOperations > 0)) {
+      if (1 != fLidStatus) {
+      } else {
+        gpio_write(fPiGPIO, GPIORED, 1);
+        fTrafficRed = 1;
+      }
+    } else {
+      gpio_write(fPiGPIO, GPIORED, 0);
+      fTrafficRed = 0;
+    }
   }
 #endif
 
+  // -- make sure that all TECs that should be on are on
+  for (int itec = 1; itec <= 8; ++itec) {
+    if (fTECTurnedOn[itec]) {
+      if (0 == static_cast<int>(fTECData[itec].reg["PowerState"].value)) {
+        stringstream a;
+        a << "TEC " << itec << " should be on, turning it on";
+        fLOG(INFO, a.str());
+        turnOnTEC(itec);
+      }
+    }
+  }
+
   // -- keep a record for the next time
   fAlarmState = allOK;
+
 }
 
 // ----------------------------------------------------------------------
@@ -823,7 +921,7 @@ int driveHardware::getTECRegisterIdx(std::string rname) {
 
 // ----------------------------------------------------------------------
 int driveHardware::getSWVersion(int itec) {
-  int version(0);
+  int version(-99);
   if (0 == fActiveTEC[itec]) {
     cout << "TEC " << itec <<  " not active, skipping" << endl;
     return version;
@@ -834,22 +932,43 @@ int driveHardware::getSWVersion(int itec) {
 
   fMutex.lock();
   sendCANmessage(false);
-  std::this_thread::sleep_for(fMilli10);
-  readCAN(1, false);
+  // -- robustly wait for the proper reply frame (CMD reply reg=6 for this TEC)
+  bool gotVersion(false);
+  for (int i = 0; i < 10; ++i) {
+    readCAN(1, false);
+    canFrame a = fCanMsg.getFrame();
+    if ((a.fTec == static_cast<unsigned int>(itec)) && (0 == a.fType) && (6 == a.fReg)) {
+      version = a.fIntVal;
+      gotVersion = true;
+      break;
+    }
+    std::this_thread::sleep_for(fMilli5);
+  }
   fMutex.unlock();
 
-  canFrame a = fCanMsg.getFrame();
+  if (!gotVersion) {
+    fLOG(WARNING, "getSWVersion(" + to_string(itec) + ") timed out waiting for reg 6 reply");
+  }
+
+  fSWVersionCached[itec] = version;
   stringstream sbla; sbla << "getSWVersion("
                           << itec << ")"
                           << " reg = " << fCANReg << hex
                           << " canID = 0x" << fCANId << dec
-                          << " version = " << a.fIntVal;
+                          << " version = " << version << ".";
   fLOG(INFO, sbla.str());
-
-
   return version;
 }
 
+
+// ----------------------------------------------------------------------
+int driveHardware::getSWVersionCached(int itec) {
+  if (fSWVersionCached.find(itec) != fSWVersionCached.end()) {
+    fLOG(INFO, "getSWVersionCached(" + to_string(itec) + ") = " + to_string(fSWVersionCached[itec]));
+    return fSWVersionCached[itec];
+  }
+  return getSWVersion(itec);
+}
 
 // ----------------------------------------------------------------------
 void  driveHardware::setTECParameter(float par) {
@@ -895,10 +1014,13 @@ void driveHardware::shutDown() {
 void driveHardware::readCAN(int nreads, bool setMutex) {
   if (setMutex) fMutex.lock();
   int nbytes(0);
+  int nGoodReads(0);
 
   bool DBX(false);
 
+  fCanLastReadRequested = nreads;
   ++nreads;
+  fCanLastReadAttempts = nreads;
 
   while (nreads > 0) {
     if (DBX) cout << "read(fSr, &fFrameR, sizeof(fFrameR)) ... nreads = " << nreads << endl;
@@ -912,6 +1034,7 @@ void driveHardware::readCAN(int nreads, bool setMutex) {
     //  nbytes = recvfrom(fSr, &fFrameR, sizeof(fFrameR), 0, (struct sockaddr*)&fAddrR, &len);
 
     if (nbytes > -1) {
+      ++nGoodReads;
       if (1) {
 #ifdef PI
         canFrame f(fFrameR.can_id, fFrameR.can_dlc, fFrameR.data);
@@ -921,6 +1044,7 @@ void driveHardware::readCAN(int nreads, bool setMutex) {
     }
     --nreads;
   }
+  fCanLastReadReceived = nGoodReads;
   if (setMutex) fMutex.unlock();
 
   parseCAN();
@@ -956,7 +1080,7 @@ bool driveHardware::findInIoMessage(string &s1, string &s2, string &s3) {
 void driveHardware::answerIoGet(string &) {
   string what = fIoMessage;
 
-  if (0) cout << "answerIoGet what ->" << what << "<-" << endl;
+  if (fVerbose > 5) cout << "answerIoGet what ->" << what << "<-" << endl;
   string delimiter(" ");
 
   string regname("nada");
@@ -976,11 +1100,22 @@ void driveHardware::answerIoGet(string &) {
 
   stringstream str;
   str << regname << " = ";
+  std::string regnameLower = regname;
+  std::transform(regnameLower.begin(), regnameLower.end(), regnameLower.begin(),
+                 [](unsigned char c){ return std::tolower(c); });
   int ntec(1);
   for (int itec = 1; itec <= 8; ++itec) {
     if ((0 != tec) && (itec != tec)) continue;
+    float regValue = getTECRegister(itec, regname);
+    if (0 == fActiveTEC[itec]) {
+      if ((regnameLower == "powerstate") || (regnameLower == "mode") || (regnameLower == "error")) {
+        regValue = 0.;
+      } else {
+        regValue = -99.;
+      }
+    }
     if (ntec > 1) str << ",";
-    str << getTECRegister(itec, regname);
+    str << regValue;
     ++ntec;
   }
   QString qmsg = QString::fromStdString(str.str());
@@ -993,7 +1128,7 @@ void driveHardware::answerIoGet(string &) {
 void driveHardware::answerIoSet(string &) {
   string what = fIoMessage;
 
-  cout << "answerIoSet what ->" << what << "<-" << endl;
+  if (fVerbose > 5) fLOG(INFO, "answerIoSet what ->" + what + "<-");
   string delimiter(" ");
 
   string regname("nada");
@@ -1017,25 +1152,23 @@ void driveHardware::answerIoSet(string &) {
   if (value < -900.) {
     fLOG(WARNING, "no proper value: " + what );
   } else {
-    cout << "register ->" << regname
-         << "<- value ->" << value
-         << "<- tec = " << tec
-         << endl;
-  }
+    if (fVerbose > 9) fLOG(INFO, "register ->" + regname
+         + "<- value ->" + to_string(value)
+         + "<- tec = " + to_string(tec));
 
-  for (int itec = 1; itec <= 8; ++itec) {
-    if ((0 != tec) && (itec != tec)) continue;
-    setTECRegister(itec, regname, value);
+    for (int itec = 1; itec <= 8; ++itec) {
+      if ((0 != tec) && (itec != tec)) continue;
+      setTECRegister(itec, regname, value);
+      if (fVerbose > 9) fLOG(INFO, "answerIoSet: setTECRegister(" + to_string(itec) + ", " + regname + ", " + to_string(value) + ")");
+    }
   }
   return;
 }
 
-
 // ----------------------------------------------------------------------
 void driveHardware::answerIoCmd() {
   string what = fIoMessage;
-
-  cout << "answerIoCmd what ->" << what << "<-" << endl;
+  if (fVerbose > 5) fLOG(INFO, "answerIoCmd what ->" + what + "<-");
   string delimiter(" ");
 
   string cmdname("nada");
@@ -1051,6 +1184,15 @@ void driveHardware::answerIoCmd() {
       ++it;
       cmdname = tokens[it];
     }
+  }
+  fLOG(INFO, "answerIoCmd cmdname = " + cmdname + " ioMessage = " + fIoMessage);
+
+  if (string::npos != cmdname.find("RecoverCAN")) {
+    fLOG(INFO, "Calling recoverCANBus() ");
+    bool ok = recoverCANBus();
+    QString qmsg = QString::fromStdString(string("RecoverCAN = ") + (ok ? "OK" : "FAIL"));
+    emit signalSendToServer(qmsg);
+    return;
   }
 
   if (string::npos != cmdname.find("Power_On")) {
@@ -1069,6 +1211,21 @@ void driveHardware::answerIoCmd() {
     fCANReg = 255;
   } else if (string::npos != cmdname.find("Reset")) {
     fCANReg = 255;
+  } else if (string::npos != cmdname.find("InactivateTEC")) {
+    if (1 == tec) {
+      string a("==WARNING== TEC 1 cannot be inactivated (required for lid sensor safety).");
+      fLOG(WARNING, a);
+      emit signalSendToServer(QString::fromStdString(a));
+      return;
+    }
+    if (8 == tec) {
+      string a("==WARNING== TEC 8 cannot be inactivated (required for water temperature safety).");
+      fLOG(WARNING, a);
+      emit signalSendToServer(QString::fromStdString(a));
+      return;
+    }
+    fActiveTEC[tec] = 0;
+    return;
   }
 
   stringstream str;
@@ -1076,6 +1233,19 @@ void driveHardware::answerIoCmd() {
   int ntec(1);
   for (int itec = 1; itec <= 8; ++itec) {
     if ((0 != tec) && (itec != tec)) continue;
+    if (0 == fActiveTEC[itec]) {
+      if ((5 == fCANReg) || (6 == fCANReg) || (7 == fCANReg) || (8 == fCANReg) || (255 == fCANReg)) {
+        if (ntec > 1) str << ",";
+        // -- keep fixed-width all-TEC replies: mark inactive boards with unphysical sentinel
+        if (6 == fCANReg) {
+          str << -99;
+        } else {
+          str << -1;
+        }
+        ++ntec;
+      }
+      continue;
+    }
     // -- use the proper functions to also control YELLO and the fan
     if (1 == fCANReg) {
       turnOnTEC(itec);
@@ -1100,17 +1270,31 @@ void driveHardware::answerIoCmd() {
     fLOG(INFO, sbla.str());
     fMutex.lock();
     sendCANmessage(false);
-    std::this_thread::sleep_for(fMilli10);
-    readCAN(1, false);
+    int cmdResult(-99);
+    bool gotCmdReply(false);
+    // -- robustly wait for the proper command reply
+    for (int iwait = 0; iwait < 10; ++iwait) {
+      readCAN(1, false);
+      canFrame a = fCanMsg.getFrame();
+      if ((a.fTec == static_cast<unsigned int>(itec)) && (0 == a.fType) && (static_cast<unsigned int>(fCANReg) == a.fReg)) {
+        cmdResult = a.fIntVal;
+        gotCmdReply = true;
+        break;
+      }
+      std::this_thread::sleep_for(fMilli5);
+    }
     fMutex.unlock();
-    canFrame a = fCanMsg.getFrame();
+
+    if ((6 == fCANReg) && !gotCmdReply) {
+      fLOG(WARNING, "answerIoCmd(GetSWVersion) timed out waiting for reply from tec " + to_string(itec));
+    }
     if (5 == fCANReg) {
       if (ntec > 1) str << ",";
       str << itec;
       ++ntec;
     } else if (6 == fCANReg) {
       if (ntec > 1) str << ",";
-      str << a.fIntVal;
+      str << cmdResult;
       ++ntec;
     } else if (7 == fCANReg) {
       if (ntec > 1) str << ",";
@@ -1135,6 +1319,26 @@ void driveHardware::answerIoCmd() {
 // ----------------------------------------------------------------------
 void driveHardware::parseIoMessage() {
   string s1("Temp"), s2("Temperature"), s3("get"), s0("Temp_");
+
+  // -- Ignore all messages except for heatOff when reconditioning
+  if (fHeaterStatus > 0) {
+    if (string::npos != fIoMessage.find("> ")) {
+
+    } else if (string::npos != fIoMessage.find("cmd ")) {
+      s1 = "heatOff";  s2 = "heatoff"; s3 = "cmd";
+      if (findInIoMessage(s1, s2, s3)) {
+        heatHYT223(0);      
+        return;
+      }
+    }
+
+    stringstream sbla; 
+    sbla << "Reconditioning in progress, heater status: " << fHeaterStatus;
+    sbla << " ignoring ->" << fIoMessage << "<-";
+    fLOG(INFO, sbla.str());
+    return;
+  }
+
   // -- GET answers
   if (string::npos != fIoMessage.find("> ")) {
 
@@ -1203,6 +1407,17 @@ void driveHardware::parseIoMessage() {
         emit signalSendToServer(qmsg);
       }
     }
+
+    // -- get the ground voltages of the last vprobe readout
+    s1 = "vprobegnd"; s2 = "vprobegnd";
+    if (findInIoMessage(s1, s2, s3)) {
+      stringstream str;
+      readVProbeGnd();
+      str << fVprobeGndVoltages;
+      QString qmsg = QString::fromStdString(str.str());
+      emit signalSendToServer(qmsg);
+    }
+
 
     s1 = "Mode";  s2 = "Mode";  if (findInIoMessage(s1, s2, s3)) answerIoGet(s2);
     s1 = "Voltage";  s2 = "ControlVoltage_Set";  if (findInIoMessage(s1, s2, s3)) answerIoGet(s2);
@@ -1282,20 +1497,19 @@ void driveHardware::parseIoMessage() {
 
   } else if (string::npos != fIoMessage.find("cmd ")) {
     s3 = "cmd ";
+    s1 = "InactivateTEC";  s2 = "inactivatetec";
+    if (findInIoMessage(s1, s2, s3)) {
+      answerIoCmd();
+    }
+
     s1 = "Power_On";  s2 = "Power_On";
     if (findInIoMessage(s1, s2, s3)) {
       answerIoCmd();
-      // for (int itec = 1; itec <=8; ++itec) {
-      //   turnOnTEC(itec);
-      // }
     }
 
     s1 = "Power_Off";  s2 = "Power_Off";
     if (findInIoMessage(s1, s2, s3)) {
       answerIoCmd();
-      // for (int itec = 1; itec <=8; ++itec) {
-      //   turnOffTEC(itec);
-      // }
     }
 
     s1 = "valve0";  s2 = "valve0";
@@ -1313,6 +1527,11 @@ void driveHardware::parseIoMessage() {
       heatHYT223(0);      
     }
 
+    s1 = "startReconditioning";  s2 = "startReconditioning";
+    if (findInIoMessage(s1, s2, s3)) {
+      doReconditioning();      
+    }
+
     s1 = "throttleN2On";  s2 = "throttleOn";
     if (findInIoMessage(s1, s2, s3)) {
       fThrottleStatus = 1; 
@@ -1322,7 +1541,6 @@ void driveHardware::parseIoMessage() {
     if (findInIoMessage(s1, s2, s3)) {
       fThrottleStatus = 0; 
     }
-
     
     s1 = "valve1";  s2 = "valve1";
     if (findInIoMessage(s1, s2, s3)) {
@@ -1354,6 +1572,26 @@ void driveHardware::parseIoMessage() {
       answerIoCmd();
     }
 
+    s1 = "RecoverCAN"; s2 = "recovercan";
+    if (findInIoMessage(s1, s2, s3)) {
+      recoverCANBus();
+    }
+
+    s1 = "PowerCycle3V3"; s2 = "powercycle3v3";
+    if (findInIoMessage(s1, s2, s3)) {
+      powerCycle3V3();
+    }
+
+    s1 = "PowerOff3V3"; s2 = "poweroff3v3";
+    if (findInIoMessage(s1, s2, s3)) {
+      power3V3(false);
+    }
+
+    s1 = "PowerOn3V3"; s2 = "poweron3v3";
+    if (findInIoMessage(s1, s2, s3)) {
+      power3V3(true);
+    }
+
     s1 = "quit";  s2 = "exit";
     if (findInIoMessage(s1, s2, s3)) {
       shutDown();
@@ -1375,12 +1613,21 @@ void driveHardware::parseIoMessage() {
     vhelp.push_back("> ");
     vhelp.push_back("> Note: tec numbering is from 1 .. 8. tec 0 refers to all TECs.");
     vhelp.push_back("> ");
+    vhelp.push_back("> Note: Once heatOn has been called, tessie will only react to heatOff");
+    vhelp.push_back("> ");
     vhelp.push_back("> cmd messages:");
     vhelp.push_back("> -------------");
     vhelp.push_back("> cmd valve0");
     vhelp.push_back("> cmd valve1");
     vhelp.push_back("> cmd throttleN2On");
     vhelp.push_back("> cmd throttleN2Off");
+    vhelp.push_back("> cmd heatOn");
+    vhelp.push_back("> cmd heatOff");
+    vhelp.push_back("> cmd startReconditioning");
+    vhelp.push_back("> cmd RecoverCAN");
+    vhelp.push_back("> cmd PowerCycle3V3");
+    vhelp.push_back("> cmd PowerOff3V3");
+    vhelp.push_back("> cmd PowerOn3V3");
     vhelp.push_back("> [tec {0|x}] cmd Power_On");
     vhelp.push_back("> [tec {0|x}] cmd Power_Off");
     vhelp.push_back("> [tec {0|x}] cmd ClearError");
@@ -1388,6 +1635,7 @@ void driveHardware::parseIoMessage() {
     vhelp.push_back("> [tec {0|x}] cmd SaveVariables");
     vhelp.push_back("> [tec {0|x}] cmd LoadVariables");
     vhelp.push_back("> [tec {0|x}] cmd Reboot");
+    vhelp.push_back("> [tec {0|x}] cmd InactivateTEC");
 
     vhelp.push_back("> ");
     vhelp.push_back("> messages to write information:");
@@ -1412,7 +1660,11 @@ void driveHardware::parseIoMessage() {
     vhelp.push_back("> get valve0");
     vhelp.push_back("> get valve1");
     vhelp.push_back("> get vprobe[1-8]");
+    vhelp.push_back("> get vprobegnd");
     vhelp.push_back("> ");
+    vhelp.push_back("> get {monitoring|allMonTessie}");
+    vhelp.push_back("> ");
+
 
     vhelp.push_back("> [tec {0|x}] get Mode");
     vhelp.push_back("> [tec {0|x}] get ControlVoltage_Set");
@@ -1464,15 +1716,17 @@ void driveHardware::sendCANmessage(bool setMutex) {
 #ifdef PI
   int itec = 0;
   itec = fCANId & 0xf;
-  if (0) cout << "sendCANmessage() TEC " << itec << endl;
+  if (fVerbose > 9) cout << "sendCANmessage() TEC " << itec << endl;
 
   if ((itec > 0) && (0 == fActiveTEC[itec])) {
-    if (0) cout << "TEC " << itec <<  " not active, skipping" << endl;
+    if (fVerbose > 9) cout << "TEC " << itec <<  " not active, skipping" << endl;
     return;
   }
 
   char data[4] = {0, 0, 0, 0};
   fFrameW.can_id = fCANId;
+  fCanLastSentId = fCANId;
+  fCanLastSentReg = fCANReg;
   int dlength(0), command(0);
   if (0x0 == ((0x0f0 & fCANId)>>4)) {
     // -- x0x is command access and no subsequent 4 bytes are required.
@@ -1495,7 +1749,7 @@ void driveHardware::sendCANmessage(bool setMutex) {
     unsigned int intCanVal = 0;
     if (0 == fCANReg) {
       intCanVal = static_cast<unsigned int>(fCANVal);
-      cout << "DBX interpreting as unsigned int ->" << intCanVal << "<-" << endl;
+      if (fVerbose > 9) cout << "DBX interpreting as unsigned int ->" << intCanVal << "<-" << endl;
       memcpy(data, &intCanVal, sizeof intCanVal);
     } else {
       memcpy(data, &fCANVal, sizeof fCANVal);
@@ -1506,22 +1760,19 @@ void driveHardware::sendCANmessage(bool setMutex) {
     fFrameW.data[4] = data[3];
   }
 
-  if (0) {
+  if (fVerbose > 9) {
     if (1 == command) {
-      cout << "   sendCANmessage: canid = " << fCANId << " cmd = " << fCANReg
-           << endl;
+      fLOG(INFO, "   sendCANmessage: canid = " + to_string(fCANId) + " cmd = " + to_string(fCANReg));
     } else {
-      cout << "   canid = " << fCANId << " reg = " << fCANReg
-           << " value = " << fCANVal
-           << " dlength = " << dlength
-           << endl;
-
+      fLOG(INFO, "   canid = " + to_string(fCANId) + " reg = " + to_string(fCANReg)
+           + " value = " + to_string(fCANVal)
+           + " dlength = " + to_string(dlength));
     }
-    printf("    can_id  = 0x%X (from sendCANmessage())\n", fFrameW.can_id);
-    printf("    can_dlc = %d\n", fFrameW.can_dlc);
-
+    fLOG(INFO, "    can_id  = " + formatHex(fFrameW.can_id) + " (from sendCANmessage())");
+    fLOG(INFO, "    can_dlc = " + to_string(fFrameW.can_dlc));
     for (int i = 0; i < fFrameW.can_dlc; ++i) {
-      printf("    data[%d] = %2x/%3d\r\n", i, fFrameW.data[i], fFrameW.data[i]);
+      fLOG(INFO, "    data[" + to_string(i) + "] = " + to_string(fFrameW.data[i])
+           + " / " + formatHex(static_cast<unsigned int>(fFrameW.data[i])));
     }
   }
 
@@ -1536,12 +1787,70 @@ void driveHardware::sendCANmessage(bool setMutex) {
 
   // -- this is required to absorb the write request from fSr
   nbytes = read(fSr, &fFrameR, sizeof(fFrameR));
+  fCanLastAbsorbRead = (nbytes > -1 ? 1 : 0);
 
   // -- wait a bit
   std::this_thread::sleep_for(fMilli5);
 
   if (setMutex) fMutex.unlock();
 
+#endif
+}
+
+
+// ----------------------------------------------------------------------
+bool driveHardware::recoverCANBus() {
+  fLOG(WARNING, "calling CANmessage::clearAll() in recoverCANBus()");
+  fCanMsg.clearAll();
+  #ifdef PI
+  fLOG(WARNING, "driveHardware::recoverCANBus() start");
+
+  auto runCmd = [this](const std::string &cmd) -> bool {
+    int rc = std::system(cmd.c_str());
+    if (0 == rc) return true;
+
+    // -- fallback for deployments where ctrlTessie runs without CAP_NET_ADMIN
+    std::string sudoCmd = "sudo -n " + cmd;
+    rc = std::system(sudoCmd.c_str());
+    if (0 != rc) {
+      fLOG(WARNING, "CAN recovery command failed: " + cmd
+           + " rc=" + to_string(rc)
+           + " (also failed with sudo -n)");
+      return false;
+    }
+    return true;
+  };
+
+  fMutex.lock();
+
+  if (fSr >= 0) {
+    close(fSr);
+    fSr = -1;
+  }
+  if (fSw >= 0) {
+    close(fSw);
+    fSw = -1;
+  }
+
+  bool ok = true;
+  ok &= runCmd("ip link set can0 down");
+  // Try controller-level restart and set auto-restart.
+  ok &= runCmd("ip link set can0 type can restart-ms 100");
+  ok &= runCmd("ip link set can0 up");
+
+  if (ok) {
+    ok = initCANSockets();
+  }
+
+  fMutex.unlock();
+
+  fLOG(ok ? INFO : ERROR, string("driveHardware::recoverCANBus() ") + (ok ? "success" : "failed"));
+  fLOG(WARNING, "calling CANmessage::clearAll() again in recoverCANBus()");
+  fCanMsg.clearAll();
+  return ok;
+#else
+  fLOG(WARNING, "driveHardware::recoverCANBus() only available on PI build");
+  return false;
 #endif
 }
 
@@ -1565,7 +1874,9 @@ void driveHardware::entertainFras() {
     return;
   }
   //  fMutex.lock();
+  if (fVerbose > 0) cout << "entertainFras() fRelaisMask = " << fRelaisMask << endl;
   if (0 == fRelaisMask) {
+    if (fVerbose > 9) cout << "entertainFras() fRelaisMask = 0, sending RTR frame" << endl;
     fFrameW.can_id = CAN_RTR_FLAG | 0x41;
     int dlength(0);
     fFrameW.can_dlc = dlength;
@@ -1629,6 +1940,25 @@ void driveHardware::turnOffLV() {
 }
 
 
+// ----------------------------------------------------------------------
+void driveHardware::power3V3(bool on) {
+  stringstream a("power3V3(" + to_string(on) + ")");
+  if (fVerbose > -1)fLOG(INFO, a.str()); 
+  if (on) {
+    gpio_write(fPiGPIO, GPIOPSUEN, 1);
+  } else {
+    gpio_write(fPiGPIO, GPIOPSUEN, 0);
+  }
+}
+
+
+// ----------------------------------------------------------------------
+void driveHardware::powerCycle3V3(int n100ms) {
+  power3V3(false);
+  std::this_thread::sleep_for(fMilli100*n100ms);
+  power3V3(true);
+}
+
 
 // ----------------------------------------------------------------------
 void driveHardware::turnOnValve(int i) {
@@ -1658,6 +1988,7 @@ void driveHardware::toggleFras(int imask) {
   int old = fRelaisMask;
   fRelaisMask = old xor imask;
 
+  if (fVerbose > 1) fLOG(INFO, "toggleFras(" + to_string(imask) + ") entered");
   //            TEC:   ssP'..tt'aaaa
   //           FRAS:   0aa'aaaa'akkk
   //  fFrameW.can_id = 000'0100'0000 -> 0x040 for process
@@ -1741,9 +2072,12 @@ void driveHardware::stopOperations(int icode) {
 
 #ifdef PI
     breakInterlock();
+    gpio_write(fPiGPIO, GPIORED, 1);
+    fTrafficRed = 1;
 #endif
     
     for (int itec = 1; itec <= 8; ++itec) {
+      if (0 == fActiveTEC[itec]) continue;
       if (1 == static_cast<int>(fTECData[itec].reg["PowerState"].value)) {
         turnOffTEC(itec);
       }
@@ -1767,6 +2101,9 @@ void driveHardware::stopOperations(int icode) {
 
 // ----------------------------------------------------------------------
 float driveHardware::getTECRegister(int itec, std::string regname) {
+  if (0 == fActiveTEC[itec]) {
+    return -999.;
+  }
   if (fTECData.find(itec) == fTECData.end()) {
     return -1.;
   }
@@ -1777,9 +2114,17 @@ float driveHardware::getTECRegister(int itec, std::string regname) {
   }
 }
 
+// ----------------------------------------------------------------------
+bool driveHardware::isTECActive(int itec) {
+  auto it = fActiveTEC.find(itec);
+  if (it == fActiveTEC.end()) return false;
+  return (1 == it->second);
+}
+
 
 // ----------------------------------------------------------------------
 void  driveHardware::turnOnTEC(int itec) {
+  if (fVerbose > 1) fLOG(INFO, "turnOnTEC(" + to_string(itec) + ") entered");
   if (0 == fFlowMeterStatus) {
     string a("==HINT== chiller not running, turn on chiller flow!"); 
     fLOG(INFO, a);
@@ -1800,7 +2145,7 @@ void  driveHardware::turnOnTEC(int itec) {
   }
 
   if (0 == fActiveTEC[itec]) {
-    cout << "TEC " << itec <<  " not active, skipping" << endl;
+    if (fVerbose > 1) fLOG(INFO, "TEC " + to_string(itec) +  " not active, skipping");
     return;
   }
   fCANId = (itec | CANBUS_SHIFT | CANBUS_PRIVATE | CANBUS_TECREC | CANBUS_CMD);
@@ -1814,7 +2159,7 @@ void  driveHardware::turnOnTEC(int itec) {
   sendCANmessage();
 
   fTECData[itec].reg["PowerState"].value = 1.;
-
+  fTECTurnedOn[itec] = true;
 #ifdef PI
   gpio_write(fPiGPIO, GPIOYELLO, 1);
   fTrafficYellow = 1;
@@ -1829,7 +2174,7 @@ void  driveHardware::turnOnTEC(int itec) {
 // ----------------------------------------------------------------------
 void  driveHardware::turnOffTEC(int itec) {
   if (0 == fActiveTEC[itec]) {
-    cout << "TEC " << itec <<  " not active, skipping" << endl;
+    if (fVerbose > 1) fLOG(INFO, "TEC " + to_string(itec) +  " not active, skipping");
     return;
   }
   fCANId = (itec | CANBUS_SHIFT | CANBUS_PRIVATE | CANBUS_TECREC | CANBUS_CMD);
@@ -1842,6 +2187,7 @@ void  driveHardware::turnOffTEC(int itec) {
   fLOG(INFO, sbla.str());
   sendCANmessage();
 
+  fTECTurnedOn[itec] = false;
   checkFan();
 }
 
@@ -1878,9 +2224,12 @@ void driveHardware::checkFan() {
 
 // ----------------------------------------------------------------------
 float driveHardware::getTECRegisterFromCAN(int itec, std::string regname) {
-  if (0) cout << "getTECRegisterFromCAN regname ->" << regname << "<-" << endl;
+  if (fVerbose > 5) fLOG(INFO, "getTECRegisterFromCAN regname ->" + regname + "<-");
   if (itec > 0) {
     if (0 == fActiveTEC[itec]) {
+      if (regname == "PowerState") {
+        return 0.;
+      }
       return -99.;
     }
   }
@@ -1896,11 +2245,15 @@ float driveHardware::getTECRegisterFromCAN(int itec, std::string regname) {
   // -- send read request
   fMutex.lock();
   sendCANmessage(false);
-  std::this_thread::sleep_for(fMilli10);
-  if (0) cout << "  getTECRegisterFromCAN for tec = " << itec
-              << " register = "<< regname
-              << " regidx = " << fCANReg
-              << endl;
+  if (itec > 0) {
+    std::this_thread::sleep_for(fMilli5);
+  } else {
+    std::this_thread::sleep_for(fMilli5);
+  }
+  if (0) fLOG(INFO, "  getTECRegisterFromCAN for tec = " + to_string(itec)
+              + " register = " + regname
+              + " regidx = " + to_string(fCANReg)
+              );
 
   if (itec > 0) {
     readCAN(1, false);
@@ -1910,6 +2263,32 @@ float driveHardware::getTECRegisterFromCAN(int itec, std::string regname) {
   } else {
     readCAN(fNActiveTEC, false);
     fMutex.unlock();
+    if (fCanLastReadReceived < fNActiveTEC) {
+      ++fCanShortfallCount;
+      // -- keep this compact: print details every Nth shortfall
+      if ((fCanShortfallCount <= 3) || (0 == fCanShortfallCount%25)) {
+        stringstream sbla;
+        sbla << "CAN frame shortfall #" << fCanShortfallCount
+             << " in broadcast read: reg="
+             << regname
+             << " regIdx=" << fCANReg
+             << " requested=" << fCanLastReadRequested
+             << " attempts=" << fCanLastReadAttempts
+             << " received=" << fCanLastReadReceived
+             << " absorbRead=" << fCanLastAbsorbRead
+             << " sentId=0x" << hex << fCanLastSentId << dec
+             << " sentReg=" << fCanLastSentReg;
+        fLOG(WARNING, sbla.str());
+      }
+    } else {
+      // -- emit occasional recovery marker after a burst
+      if (fCanShortfallCount > 0) {
+        stringstream sbla;
+        sbla << "CAN frame shortfall recovered after " << fCanShortfallCount << " shortfalls";
+        fLOG(INFO, sbla.str());
+        fCanShortfallCount = 0;
+      }
+    }
     return -97;
   }
   return -96;
@@ -1918,6 +2297,10 @@ float driveHardware::getTECRegisterFromCAN(int itec, std::string regname) {
 
 // ----------------------------------------------------------------------
 void driveHardware::setTECRegister(int itec, std::string regname, float value) {
+  if (0 == fActiveTEC[itec]) {
+    if (fVerbose > -1) fLOG(INFO, "TEC " + to_string(itec) +  " not active, skipping");
+    return;
+  }
   fTECData[itec].reg[regname].value = value;
 
   // -- program parameter
@@ -1985,7 +2368,7 @@ TECData  driveHardware::initAllTECRegister() {
 
   TECRegister b;
   // -- read/write registers
-  b = {1,      "Mode",                 0, 1}; tdata.reg.insert(make_pair(b.name, b));
+  b = {0,      "Mode",                 0, 1}; tdata.reg.insert(make_pair(b.name, b));
   b = {0.,     "ControlVoltage_Set",   1, 1}; tdata.reg.insert(make_pair(b.name, b));
   b = {1.,     "PID_kp",               2, 1}; tdata.reg.insert(make_pair(b.name, b));
   b = {2.,     "PID_ki",               3, 1}; tdata.reg.insert(make_pair(b.name, b));
@@ -2031,76 +2414,103 @@ TECData  driveHardware::initAllTECRegister() {
 // ----------------------------------------------------------------------
 void driveHardware::readAllParamsFromCANPublic() {
   ++fRunCnt;
-  // -- what to read: float
-  vector<string> regnames = {"ControlVoltage_Set"
-                             , "PID_kp"
-                             , "PID_ki"
-                             , "PID_kd"
-                             , "Temp_Set"
-                             , "PID_Max"
-                             , "PID_Min"
-                             , "Temp_W"
-                             , "Temp_M"
-                             , "Temp_Diff"
-                             , "Peltier_U"
-                             , "Peltier_I"
-                             , "Peltier_R"
-                             , "Peltier_P"
-                             , "Supply_U"
-                             , "Supply_I"
-                             , "Supply_P"
-                             , "Error"
-                             , "Ref_U"
-
-  };
-
-  for (unsigned int ireg = 0; ireg < regnames.size(); ++ireg) {
-    if (0 == ireg%2) evtHandler();
-    // -- NOTE: ireg != regnumber
-    if (7 == ireg) {
-      // -- read water temperature from special TEC 8
-      fTECData[8].reg["Temp_W"].value = getTECRegisterFromCAN(8, regnames[ireg]);
-      // -- read pressure sensor from special TEC 1
-      fTECData[1].reg["Temp_W"].value = getTECRegisterFromCAN(1, "Temp_W");
-    } else if (9 == ireg) {
-      fTECData[8].reg["Temp_Diff"].value = getTECRegisterFromCAN(8, regnames[ireg]);
-    } else {
-      getTECRegisterFromCAN(0, regnames[ireg]);
-      if (0) cout << "  " << tStamp() << " reading broadcast "<< regnames[ireg] << endl;
-      int regIdx = fTECData[1].getIdx(regnames[ireg]);
-      for (int i = 1; i <= 8; ++i) {
-        if (0 == fActiveTEC[i]) continue;
-        fTECData[i].reg[regnames[ireg]].value = fCanMsg.getFloat(i, regIdx);
+  auto readBroadcastFloat = [this](const std::string &regname) {
+    if (fVerbose > 5) fLOG(INFO, "reading broadcast " + regname);
+    getTECRegisterFromCAN(0, regname);
+    int regIdx = fTECData[1].getIdx(regname);
+    const bool dbgBroadcast = (fVerbose > 5);
+    std::stringstream perTec;
+    if (dbgBroadcast) perTec << "broadcast results " << regname << ": ";
+    for (int i = 1; i <= 8; ++i) {
+      if (0 == fActiveTEC[i]) {
+        fTECData[i].reg[regname].value = -99.;
+        if (dbgBroadcast) perTec << "TEC" << i << "=INACTIVE ";
+        continue;
+      }
+      bool haveFrame = (fCanMsg.nFrames(i, regIdx) > 0);
+      float regValue = fCanMsg.getFloat(i, regIdx);
+      // -- do not overwrite cached value on missed reply (avoids bogus 0/off flicker)
+      if (haveFrame) {
+        fTECData[i].reg[regname].value = regValue;
+      }
+      if (dbgBroadcast) {
+        perTec << "TEC" << i << "=" << (haveFrame ? to_string(regValue) : "MISS") << " ";
       }
     }
+    if (dbgBroadcast) fLOG(INFO, perTec.str());
+  };
+
+  auto readBroadcastInt = [this](const std::string &regname) {
+    if (fVerbose > 5) fLOG(INFO, "reading broadcast " + regname);
+    getTECRegisterFromCAN(0, regname);
+    int regIdx = fTECData[1].getIdx(regname);
+    std::vector<int> missingTec;
+    for (int i = 1; i <= 8; ++i) {
+      if (0 == fActiveTEC[i]) continue;
+      if (0 == fCanMsg.nFrames(i, regIdx)) missingTec.push_back(i);
+    }
+    if (!missingTec.empty()) {
+      std::stringstream ss;
+      ss << "Missing CAN reply for register " << regname << " (idx=" << regIdx << ") from TEC";
+      if (missingTec.size() > 1) ss << "s";
+      ss << ": ";
+      for (size_t j = 0; j < missingTec.size(); ++j) {
+        if (j > 0) ss << ",";
+        ss << missingTec[j];
+      }
+      fLOG(WARNING, ss.str());
+    }
+    const bool dbgBroadcast = (fVerbose > 5);
+    std::stringstream perTec;
+    if (dbgBroadcast) perTec << "broadcast results " << regname << ": ";
+    for (int i = 1; i <= 8; ++i) {
+      if (0 == fActiveTEC[i]) {
+        fTECData[i].reg[regname].value = -1;
+        if (dbgBroadcast) perTec << "TEC" << i << "=INACTIVE ";
+        continue;
+      }
+      bool haveFrame = (fCanMsg.nFrames(i, regIdx) > 0);
+      int regValue = fCanMsg.getInt(i, regIdx);
+      if (haveFrame) {
+        fTECData[i].reg[regname].value = regValue;
+      }
+      if (dbgBroadcast) {
+        perTec << "TEC" << i << "=" << (haveFrame ? to_string(regValue) : "MISS") << " ";
+      }
+    }
+    if (dbgBroadcast) fLOG(INFO, perTec.str());
+  };
+
+  // -- fast-changing registers: always read each cycle
+  readBroadcastFloat("ControlVoltage_Set");
+  readBroadcastFloat("Temp_Set");
+  // -- water temperature from special TEC 8 and pressure sensor from special TEC 1
+  fTECData[8].reg["Temp_W"].value = getTECRegisterFromCAN(8, "Temp_W");
+  if (fVerbose > 5) fLOG(INFO, "read single register Temp_W for water temperature = " + to_string(fTECData[8].reg["Temp_W"].value));
+  fTECData[1].reg["Temp_W"].value = getTECRegisterFromCAN(1, "Temp_W");
+  if (fVerbose > 5) fLOG(INFO, "read single register Temp_W for pressure sensor = " + to_string(fTECData[1].reg["Temp_W"].value));
+  readBroadcastFloat("Temp_M");
+  // -- integer CAN values (0/1): must use getInt/fIntVal; getFloat mis-parses e.g. PowerState=1 as ~0
+  readBroadcastInt("PowerState");
+  readBroadcastInt("Mode");
+  readBroadcastInt("Error");
+
+  // -- slow-changing registers: read one per cycle in round-robin (~10s cadence)
+  static const std::vector<std::string> slowRegs = {
+    "PID_kp", "PID_ki", "PID_kd", "PID_Max", "PID_Min",
+    "Temp_Diff", "Ref_U", 
+    "Peltier_U", "Peltier_I", "Peltier_R", "Peltier_P",
+    "Supply_U", "Supply_I", "Supply_P"
+  };
+  const std::string &slowReg = slowRegs[static_cast<size_t>(fRunCnt) % slowRegs.size()];
+  if ("Temp_Diff" == slowReg) {
+    fTECData[8].reg["Temp_Diff"].value = getTECRegisterFromCAN(8, "Temp_Diff");
+    if (fVerbose > 5) fLOG(INFO, "read single register Temp_Diff = " + to_string(fTECData[8].reg["Temp_Diff"].value));
+  } else if (("Mode" == slowReg) || ("PowerState" == slowReg) || ("Error" == slowReg)) {
+    readBroadcastInt(slowReg);
+  } else {
+    readBroadcastFloat(slowReg);
   }
-
-  evtHandler();
-
-  // -- read integer Mode
-  getTECRegisterFromCAN(0, "Mode");
-  int regIdx = fTECData[1].getIdx("Mode");
-  for (int i = 1; i <= 8; ++i) {
-    if (0 == fActiveTEC[i]) continue;
-    fTECData[i].reg["Mode"].value = fCanMsg.getInt(i, regIdx);
-  }
-
-  // -- read integer PowerState
-  getTECRegisterFromCAN(0, "PowerState");
-  regIdx = fTECData[1].getIdx("PowerState");
-  for (int i = 1; i <= 8; ++i) {
-    if (0 == fActiveTEC[i]) continue;
-    fTECData[i].reg["PowerState"].value = fCanMsg.getInt(i, regIdx);
-  }
-
-  // -- read integer Error
-  getTECRegisterFromCAN(0, "Error");
-  regIdx = fTECData[1].getIdx("Error");
-  for (int i = 1; i <= 8; ++i) {
-    if (0 == fActiveTEC[i]) continue;
-    fTECData[i].reg["Error"].value = fCanMsg.getInt(i, regIdx);
-  }
-
 }
 
 
@@ -2133,7 +2543,8 @@ void driveHardware::dumpMQTT(int all) {
      << fInterlockStatus << ", D"
      << fFreeDiskspace << ", F"
      << fFlowMeterStatus << ", T"
-     << fThrottleStatus
+     << fThrottleStatus << ", H"
+     << fHeaterStatus
     ;
   emit signalSendToMonitor(QString::fromStdString(ss.str()));
 
@@ -2163,33 +2574,49 @@ void driveHardware::dumpMQTT(int all) {
     , {"Mode", 0.1}
   };
 
+  fMonString = "";
+  int cnt(0);
   for (auto const &skey: tolerances) {
     stringstream ss;
     ss << skey.first << " = ";
     bool printit(false);
     bool isInt(false); 
     bool isHex(false); 
+    double inactiveValue(-99.);
     if (skey.first == "Mode")  isInt = true;
     if (skey.first == "PowerState")  isInt = true;
     if (skey.first == "Error") isHex = true;
+    if (isInt || isHex) inactiveValue = -1.;
 
     for (int i = 1; i <= 8; ++i) {
+      double value = fTECData[i].reg[skey.first].value;
+      double oldValue = oldTECData[i].reg[skey.first].value;
+      if (0 == fActiveTEC[i]) {
+        value = inactiveValue;
+        oldValue = inactiveValue;
+      }
       if (isInt) {
-        ss << static_cast<int>(fTECData[i].reg[skey.first].value);
+        ss << static_cast<int>(value);
       } else if (isHex) {
-        ss << "0x" << hex << static_cast<int>(fTECData[i].reg[skey.first].value) << dec;
+        ss << "0x" << hex << static_cast<int>(value) << dec;
       } else {
-        ss << fTECData[i].reg[skey.first].value;
+        ss << value;
       }
       if (1 == all) {
         printit = true;
       } else {
-        if (fabs(fTECData[i].reg[skey.first].value - oldTECData[i].reg[skey.first].value) > tolerances[skey.first]) {
+        if (fabs(value - oldValue) > tolerances[skey.first]) {
           printit = true;
         }
       }
       if (i < 8) ss << ",";
     }
+    // -- web UI (server3.js) caches last "PowerState = ..." / Mode / Error lines; publish every cycle
+    if (skey.first == "PowerState" || skey.first == "Mode" || skey.first == "Error") {
+      printit = true;
+    }
+    if (cnt++ > 0) fMonString += " ";
+    fMonString += ss.str();
     if (printit)  emit signalSendToMonitor(QString::fromStdString(ss.str()));
   }
 
@@ -2207,28 +2634,33 @@ void driveHardware::dumpCSV() {
 
   // -- only one water temperature reading
   for (int i = 8; i <= 8; ++i) {
-    snprintf(cs, sizeof(cs), "%+4.1f", fTECData[i].reg["Temp_W"].value);
-    if (fActiveTEC[i]) output << "," << cs;
+    double val = fActiveTEC[i] ? fTECData[i].reg["Temp_W"].value : -99.0;
+    snprintf(cs, sizeof(cs), "%+4.1f", val);
+    output << "," << cs;
   }
 
   for (int i = 1; i <= 8; ++i) {
-    snprintf(cs, sizeof(cs), "%1.0f", fTECData[i].reg["PowerState"].value);
-    if (fActiveTEC[i]) output << "," << cs;
+    double val = fActiveTEC[i] ? fTECData[i].reg["PowerState"].value : -1.0;
+    snprintf(cs, sizeof(cs), "%1.0f", val);
+    output << "," << cs;
   }
 
   for (int i = 1; i <= 8; ++i) {
-    snprintf(cs, sizeof(cs), "%+5.2f", fTECData[i].reg["ControlVoltage_Set"].value);
-    if (fActiveTEC[i]) output << "," << cs;
+    double val = fActiveTEC[i] ? fTECData[i].reg["ControlVoltage_Set"].value : -99.0;
+    snprintf(cs, sizeof(cs), "%+5.2f", val);
+    output << "," << cs;
   }
 
   for (int i = 1; i <= 8; ++i) {
-    snprintf(cs, sizeof(cs), "%+4.1f", fTECData[i].reg["Temp_Set"].value);
-    if (fActiveTEC[i]) output << "," << cs;
+    double val = fActiveTEC[i] ? fTECData[i].reg["Temp_Set"].value : -99.0;
+    snprintf(cs, sizeof(cs), "%+4.1f", val);
+    output << "," << cs;
   }
 
   for (int i = 1; i <= 8; ++i) {
-    snprintf(cs, sizeof(cs), "%+5.2f", fTECData[i].reg["Temp_M"].value);
-    if (fActiveTEC[i]) output << "," << cs;
+    double val = fActiveTEC[i] ? fTECData[i].reg["Temp_M"].value : -99.0;
+    snprintf(cs, sizeof(cs), "%+5.2f", val);
+    output << "," << cs;
   }
 
   fCsvFile <<  output.str() << endl;
@@ -2248,16 +2680,18 @@ void driveHardware::readAirTemperature() {
     fAirTemp = fSHT85Temp;
     fAirRH   = fSHT85RH;
     fAirDP   = fSHT85DP;
+    if (fVerbose > 5) {
+      fLOG(INFO, "readSHT85: T: " + to_string(fSHT85Temp) + " RH: " + to_string(fSHT85RH) + " DP: " + to_string(fSHT85DP));
+    }
   }
   if (fI2CSlaveStatus[I2C_HYT223_ADDR]) {
     readHYT223();
     fAirTemp = fHYT223Temp;
     fAirRH   = fHYT223RH;
     fAirDP   = fHYT223DP;
-  }
-  if (0) {
-    cout << "readHYT223: T: " << fHYT223Temp << " RH: " << fHYT223RH << " DP: " << fHYT223DP << endl;
-    cout << "readSHT85: T: " << fSHT85Temp << " RH: " << fSHT85RH << " DP: " << fSHT85DP << endl;
+    if (fVerbose > 5) {
+      fLOG(INFO, "readHYT223: T: " + to_string(fHYT223Temp) + " RH: " + to_string(fHYT223RH) + " DP: " + to_string(fHYT223DP));
+    }
   }
 }
 
@@ -2271,6 +2705,12 @@ void driveHardware::readHYT223() {
     fHYT223Data[i] = 0;
   }
   int length = i2c_read_device(fPiGPIO, handle, fHYT223Data, 4);
+  if (length == PI_I2C_READ_FAILED) {
+    i2c_close(fPiGPIO, handle);
+    recoverI2CBus();
+    handle = i2c_open(fPiGPIO, I2CBUS, I2C_HYT223_ADDR, 0);
+    length = i2c_read_device(fPiGPIO, handle, fHYT223Data, 4);
+  }
   if (length < 6) {
     unsigned int vrh  = ((fHYT223Data[0]<<8) + fHYT223Data[1]) & 0x3fff;
     unsigned int vtt  = ((fHYT223Data[2]<<8) + fHYT223Data[3]) >>2;
@@ -2300,7 +2740,7 @@ void driveHardware::readHYT223() {
     if (length == PI_I2C_READ_FAILED) b << " return value = PI_I2C_READ_FAILED";
     fLOG(WARNING, b.str());
   } else {
-    cout << "#### readHYT223 readout error, length = " << length << endl;
+    if (fVerbose > 1) fLOG(ERROR, "#### readHYT223 readout error, length = " + to_string(length));
   }
    
   // -- trigger next measurement
@@ -2309,6 +2749,107 @@ void driveHardware::readHYT223() {
 #endif
 }
 
+// ----------------------------------------------------------------------
+bool driveHardware::recoverI2CBus() {
+#ifdef PI
+  // TODO: verify pin numbers for your hardware.
+  // -- GPIO00/GPIO01 correspond to physical header pins 27/28 on Raspberry Pi.
+  const unsigned int SDA_PIN = 0; // pin 27: SDA0
+  const unsigned int SCL_PIN = 1; // pin 28: SCL0
+  const int pulseDelayUs = 10;
+
+  fLOG(WARNING, "recoverI2CBus() start");
+
+  set_mode(fPiGPIO, SDA_PIN, PI_INPUT);
+  set_mode(fPiGPIO, SCL_PIN, PI_INPUT);
+  std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  int sdaBefore = gpio_read(fPiGPIO, SDA_PIN);
+  int sclBefore = gpio_read(fPiGPIO, SCL_PIN);
+  fLOG(INFO, "recoverI2CBus() levels before pulse: SDA="
+       + to_string(sdaBefore) + " SCL=" + to_string(sclBefore));
+
+  // -- if SDA is held low by a slave, release with up to 9 SCL pulses
+  for (int i = 0; i < 9; ++i) {
+    if (1 == gpio_read(fPiGPIO, SDA_PIN)) break;
+    set_mode(fPiGPIO, SCL_PIN, PI_OUTPUT);
+    gpio_write(fPiGPIO, SCL_PIN, 0);
+    std::this_thread::sleep_for(std::chrono::microseconds(pulseDelayUs));
+    set_mode(fPiGPIO, SCL_PIN, PI_INPUT); // release high
+    std::this_thread::sleep_for(std::chrono::microseconds(pulseDelayUs));
+  }
+
+  // -- issue STOP condition: SDA low while SCL high, then SDA high
+  set_mode(fPiGPIO, SDA_PIN, PI_OUTPUT);
+  gpio_write(fPiGPIO, SDA_PIN, 0);
+  std::this_thread::sleep_for(std::chrono::microseconds(pulseDelayUs));
+  set_mode(fPiGPIO, SCL_PIN, PI_INPUT);
+  std::this_thread::sleep_for(std::chrono::microseconds(pulseDelayUs));
+  set_mode(fPiGPIO, SDA_PIN, PI_INPUT);
+  std::this_thread::sleep_for(std::chrono::microseconds(pulseDelayUs));
+
+  // -- restore I2C alternate function
+  set_mode(fPiGPIO, SDA_PIN, PI_ALT0);
+  set_mode(fPiGPIO, SCL_PIN, PI_ALT0);
+  std::this_thread::sleep_for(std::chrono::milliseconds(1));
+
+  int sdaAfter = gpio_read(fPiGPIO, SDA_PIN);
+  int sclAfter = gpio_read(fPiGPIO, SCL_PIN);
+  fLOG(INFO, "recoverI2CBus() levels after pulse: SDA="
+       + to_string(sdaAfter) + " SCL=" + to_string(sclAfter));
+  bool ok = ((1 == sdaAfter) && (1 == sclAfter));
+  fLOG(ok ? INFO : WARNING, string("recoverI2CBus() ") + (ok ? "success" : "incomplete (SDA/SCL still low)"));
+  return ok;
+#else
+  return false;
+#endif
+}
+
+
+// ----------------------------------------------------------------------
+void driveHardware::doReconditioning() {
+  double targetTemp(90.);
+  int    targetTime(600);
+  if (0 == fReconditioning) {
+    fLOG(INFO, "Reconditioning: starting reconditioning");
+    heatHYT223(true);
+    turnOffValve(1);
+    turnOffValve(0);
+    fReconditioning = 1;
+    fReconditioningWaitTime = 0;
+  } 
+
+  if (1 == fReconditioning) {
+    if (fHYT223Temp > targetTemp) {
+      fReconditioning = 2;
+      stringstream a;
+      a << "Reconditioning: temperature > " << fixed << setprecision(1) << targetTemp << "degC, starting reconditioning, wait time = " << fReconditioningWaitTime;
+      fLOG(INFO, a.str());
+    } else {
+      stringstream a;
+      a << "Reconditioning: temperature = " << fixed << setprecision(1) << fHYT223Temp << "degC, waiting for temperature to reach " << targetTemp;
+      fLOG(INFO, a.str());
+    }
+  }
+
+  if (2 == fReconditioning) {
+    ++fReconditioningWaitTime;
+    stringstream a;
+    a << "Reconditioning: temperature = " << fixed << setprecision(1) << fHYT223Temp << "degC, wait time = " << fReconditioningWaitTime;
+    fLOG(INFO, a.str());
+    if (fReconditioningWaitTime > targetTime) {
+      fReconditioning = 0;
+      stringstream a;
+      a << "Reconditioning: wait time > " << targetTime << " seconds, stopping with reconditioning, cool-down started";
+      fLOG(INFO, a.str());
+      heatHYT223(false);
+      // -- flush+rinse to speed up cool-down
+      turnOnValve(1);
+      turnOnValve(0);
+      fReconditioningWaitTime = 0;
+    }
+  }
+
+}
 
 // ----------------------------------------------------------------------
 void driveHardware::heatHYT223(bool on) {
@@ -2323,11 +2864,11 @@ void driveHardware::heatHYT223(bool on) {
   if (on) {
     // -- Port low -> pFET passes VDD to heater
     command[1] = 0x00;
-    fHeaterStatus = 1;
+    fHeaterStatus = HEATER_MAX_STATUS;
   } else {
     // -- Port low -> pFET block VDD to heater
     command[1] = 0x7f;
-    fHeaterStatus = 0;
+    --fHeaterStatus;
   }
 
   for (int i = 0; i < 4; ++i) {
@@ -2363,6 +2904,7 @@ void driveHardware::heatHYT223(bool on) {
 
 // ----------------------------------------------------------------------
 void driveHardware::readSHT85() {
+  return;
 #ifdef PI
   static int badReadoutCounter(0);
   static int readoutCounter(0);
@@ -2390,6 +2932,12 @@ void driveHardware::readSHT85() {
   std::this_thread::sleep_for(fMilli20);
 
   length = i2c_read_device(fPiGPIO, handle, fSHT85Data, 6);
+  if (length == PI_I2C_READ_FAILED) {
+    i2c_close(fPiGPIO, handle);
+    recoverI2CBus();
+    handle = i2c_open(fPiGPIO, I2CBUS, I2C_SHT85_ADDR, 0);
+    length = i2c_read_device(fPiGPIO, handle, fSHT85Data, 6);
+  }
   while (cnt < 5) {
     if (6 == length) break;
     std::this_thread::sleep_for(fMilli20);
@@ -2450,6 +2998,7 @@ void driveHardware::readSHT85() {
 // ----------------------------------------------------------------------
 void driveHardware::readFlowmeter() {
 #ifdef PI
+  if (fVerbose > 0) fLOG(INFO, "readFlowmeter entered");
   int flowMeterStatus(0);
   int handle = i2c_open(fPiGPIO, I2CBUS, I2C_FLOWMETER_ADDR, 0);
   // -- set command byte to 0x0 (Register: Input Port, Protocol: Read Byte)
@@ -2459,6 +3008,16 @@ void driveHardware::readFlowmeter() {
 
   char data = 0x0;
   length = i2c_read_device(fPiGPIO, handle, &data, 1);
+  if (length == PI_I2C_READ_FAILED) {
+    i2c_close(fPiGPIO, handle);
+    recoverI2CBus();
+    handle = i2c_open(fPiGPIO, I2CBUS, I2C_FLOWMETER_ADDR, 0);
+    length = i2c_write_device(fPiGPIO, handle, &command, 1);
+    if (length >= 0) {
+      std::this_thread::sleep_for(fMilli20);
+      length = i2c_read_device(fPiGPIO, handle, &data, 1);
+    }
+  }
   i2c_close(fPiGPIO, handle);
 
   if (length < 1) {
@@ -2484,10 +3043,11 @@ void driveHardware::readFlowmeter() {
     fLOG(WARNING, a.str());
   }
   
-
-  //  stringstream a("flowmeter readout data =  " + to_string(data)
-  //                 + " fFlowMeterStatus = " + to_string(fFlowMeterStatus));
-   // fLOG(INFO, a.str());
+  if (fVerbose > 0) {
+   stringstream a("flowmeter readout data =  " + to_string(data)
+                    + " fFlowMeterStatus = " + to_string(fFlowMeterStatus));
+    fLOG(INFO, a.str());
+  }
 #endif
 }
 
@@ -2512,7 +3072,7 @@ int driveHardware::readI2C() {
   else s_i2c += "off";
   
   //fLOG(WARNING, s_i2c+"  "+to_string(r));
-  
+  std::this_thread::sleep_for(fMilli20);
   i2c_close(fPiGPIO, handle);
 #endif
 return r;
@@ -2524,6 +3084,39 @@ return r;
 
 // ----------------------------------------------------------------------
 void driveHardware::readVProbe(int pos) {
+  static map<int, int> nReads({{1, 0}, {2, 0}, {3, 0}, {4, 0}, {5, 0}, {6, 0}, {7, 0}, {8, 0}});
+  fVprobeVoltages = "init";
+  fVprobeGndVoltages = "init";
+  static map<int, time_t> sLastVprobeReadout;
+  static int first(1);
+  if (first) {
+    for (int i = 1; i <= 8; ++i) {
+      sLastVprobeReadout[i] = time(NULL);
+    }
+    first = 0;
+  }
+  time_t now = time(NULL);
+  const time_t vprobeRecoveryCutSeconds = 12*60*60; // 12h
+  if (now - sLastVprobeReadout[pos] > vprobeRecoveryCutSeconds) {
+    stringstream a("readVProbe(" + to_string(pos) + ") timeout (>12h), last readout was at "
+                   + to_string(sLastVprobeReadout[pos])
+                   + ", now = " + to_string(now));
+    fLOG(WARNING, a.str());
+    powerCycle3V3();
+    sLastVprobeReadout[pos] = now;
+  }
+
+  ++nReads[pos];
+  if (nReads[pos] > 100) {
+    nReads[pos] = 0;
+    fLOG(INFO, "readVProbe(" + to_string(pos) + ") reset due to too many reads");
+    powerCycle3V3(1);
+    std::this_thread::sleep_for(fMilli100);
+    fLOG(INFO, "readVProbe(" + to_string(pos) + ") reset done");
+  }
+
+  fLOG(INFO, "readVProbe(" + to_string(pos) + ") start");
+  static deque<string> sRecentVprobeRawReadouts;
 
   double VDD(3.3114);
   // -- TP corr. Doc:  6  5  9  10  11  7  8  12  4  3  2  13  14  26  8  1
@@ -2539,25 +3132,6 @@ void driveHardware::readVProbe(int pos) {
 
   char *buffer(0);
 
-  if (0) {
-    cout << "bufferC0: ";
-    for (int i = 0; i < 18; i +=2) {
-      cout << dec << "i = " << i << ": 0x" << hex
-           << static_cast<int>(bufferC0[i])
-           << static_cast<int>(bufferC0[i+1])
-           << ". ";
-    }
-    cout << endl;
-    cout << "bufferC1: ";
-    for (int i = 0; i < 18; i +=2) {
-      cout << dec << "i = " << i << ": 0x" << hex
-           << static_cast<int>(bufferC1[i])
-           << static_cast<int>(bufferC1[i+1])
-           << ". ";
-    }
-    cout << endl;
-  }
-
   double v[16] = {0};
 
   int ipos = pos - 1;
@@ -2569,62 +3143,141 @@ void driveHardware::readVProbe(int pos) {
     else
       buffer = bufferC1;
 
-#ifdef PI
     int lengthExp(18); // A = 10, B = 11, C = 12, D = 13, E = 14, F = 15
     int handle = i2c_open(fPiGPIO, I2CBUS, addresses[iaddr], 0);
     int length = i2c_read_device(fPiGPIO, handle, (iaddr == 0? bufferC0 : bufferC1), lengthExp);
     i2c_close(fPiGPIO, handle);
 
-    if (length != lengthExp) {
-      fLOG(INFO, "Failed to read from the VProbe ");
+    stringstream raw;
+    raw << "vprobe" << pos
+        << " iaddr=" << iaddr
+        << " addr(dec)=" << addresses[iaddr]
+        << " addr(hex)=0x" << hex << addresses[iaddr] << dec
+        << " length=" << length
+        << " bytes=";
+    for (int ibyte = 0; ibyte < lengthExp; ++ibyte) {
+      if (ibyte > 0) raw << " ";
+      raw << std::setfill('0') << std::setw(2) << hex
+          << (static_cast<unsigned int>(static_cast<unsigned char>(buffer[ibyte])) & 0xff);
+
+    }
+    sRecentVprobeRawReadouts.push_back(raw.str());
+    while (sRecentVprobeRawReadouts.size() > 10) sRecentVprobeRawReadouts.pop_front();
+
+    // -- Check for valid second-to-last and last byte values
+    bool badReadout(false);
+    if (length == lengthExp) {
+      unsigned int w16 = (static_cast<unsigned int>(static_cast<unsigned char>(buffer[16])) & 0xff);
+      unsigned int w17 = (static_cast<unsigned int>(static_cast<unsigned char>(buffer[17])) & 0xff);
+      if (w16 == 0xc9 && (w17 == 0x01 || w17 == 0x02)) {
+        badReadout = false;
+      } else {
+        badReadout = true;
+      }
+      if (badReadout) {
+        fLOG(ERROR, "Caught bad readout from the VProbe at i2c bus address " 
+          + to_string(addresses[iaddr])  
+          + " length = " + to_string(length) + " for position " + to_string(pos)
+        );
+        fLOG(ERROR, "Bad readout: w16 = " + to_string(w16) + ", w17 = " + to_string(w17));
+        fLOG(ERROR, "Last VProbe raw readouts (oldest -> newest):");
+        for (auto const &entry: sRecentVprobeRawReadouts) {
+          fLOG(ERROR, "  " + entry);
+        }
+        fLOG(ERROR, "setting fVerbose to 10");
+        fVerbose = 10;
+        fLOG(ERROR, "power cycling 3.3V due to VProbe read error");
+        powerCycle3V3(1);
+        std::this_thread::sleep_for(fMilli100);
+        fLOG(ERROR, "power cycling 3.3V done");
+
+        // fLOG(ERROR, "closing I2C bus");
+        // i2c_close(fPiGPIO, handle);
+        // fLOG(ERROR, "recovering I2C bus");
+        // recoverI2CBus();
+        // fLOG(ERROR, "recovering I2C bus done");
+  
+        stringstream output;
+        output <<  "vprobe" << pos << " = -999";
+        fVprobeVoltages = output.str();
+
+        stringstream output2;
+        output2 <<  "vprobegnd = -999";
+        fVprobeGndVoltages = output2.str();
+        fMapVprobeGndVoltages.clear();
+        fMapVprobeGndVoltages["gnd3"] = -999;
+        fMapVprobeGndVoltages["gnd6"] = -999;
+        fMapVprobeGndVoltages["gnd11"] = -999;
+        fMapVprobeGndVoltages["gnd14"] = -999;
+        fMapVprobeGndVoltages["gnd26"] = -999;
+
+        // fLOG(ERROR, "power cycling 3.3V due to VProbe read error");
+        // powerCycle3V3();
+        // fLOG(ERROR, "power cycling 3.3V done");
+        fLOG(ERROR, "returning due to bad readout");
+        return;
+      } else {
+        if (10 == fVerbose) {
+          fVerbose = 0;
+          fLOG(INFO, "resetting fVerbose = 0");
+        } 
+        for (int i = 0; i < 8; ++i) {
+          v[iaddr*8+i] = static_cast<unsigned int>(buffer[2*i] + (buffer[2*i+1]<<8))*VDD/65536;
+        }
+      }
+    } else {
+      fLOG(ERROR, "Failed to read from the VProbe at i2c bus address " 
+           + to_string(addresses[iaddr])  
+           + " length = " + to_string(length) + ""
+          );
+      if (length < 0) {
+        stringstream b;
+        if (length == PI_BAD_HANDLE) b << " return value = PI_BAD_HANDLE";
+        if (length == PI_BAD_PARAM) b << " return value = PI_BAD_PARAM";
+        if (length == PI_I2C_READ_FAILED) b << " return value = PI_I2C_READ_FAILED";
+        if (b.str().size() > 0) {
+          fLOG(ERROR, b.str());
+        }
+      }
+      fLOG(ERROR, "Last VProbe raw readouts (oldest -> newest):");
+      for (auto const &entry: sRecentVprobeRawReadouts) {
+        fLOG(ERROR, "  " + entry);
+      }
       stringstream output;
       output <<  "vprobe" << pos << " = -999";
       fVprobeVoltages = output.str();
+      fMapVprobeGndVoltages.clear();
+      fMapVprobeGndVoltages["gnd3"] = -999;
+      fMapVprobeGndVoltages["gnd6"] = -999;
+      fMapVprobeGndVoltages["gnd11"] = -999;
+      fMapVprobeGndVoltages["gnd14"] = -999;
+      fMapVprobeGndVoltages["gnd26"] = -999;
+
+      // fLOG(ERROR, "power cycling 3.3V due to VProbe read error");
+      // powerCycle3V3();
+      // fLOG(ERROR, "power cycling 3.3V done");
+      fLOG(ERROR, "returning due to failed readout");
       return;
-    } else {
-      if (0) {
-        printf("- Data read from the VProbe at i2c bus address 0x%x", addresses[iaddr]);
-        cout << endl;
-      }
-    }
-#else
-    cout << "using default data instead of reading from I2C bus, iaddr = " << iaddr << endl;
-#endif
-    std::ios_base::fmtflags f( cout.flags() );
-    if (0) {
-      for (int i = 0; i < 18; i +=2) {
-        cout << dec << "i = " << i << ": 0x" << hex
-             << std::setfill('0') << std::setw(2)
-             << static_cast<int>(buffer[i])
-             << std::setfill('0') << std::setw(2)
-             << static_cast<int>(buffer[i+1])
-             << ". ";
-      }
-      cout << endl;
-      cout.flags(f);
-    }
 
-    for (int i = 0; i < 8; ++i) {
-      v[iaddr*8+i] = static_cast<unsigned int>(buffer[2*i] + (buffer[2*i+1]<<8))*VDD/65536;
-      if (0) {
-        cout << "i = " << i << ": buffer[] = "
-             << std::setfill('0') << std::setw(4)
-             << hex
-             << static_cast<int>(buffer[2*i] + (buffer[2*i+1]<<8)) << " -> " << v[iaddr*8+i]
-             << dec
-             << " at idx = " << iaddr*8+i
-             << endl;
-
-        cout.flags( f );
-
-        cout << "v[] printout:" << endl;
-        for (int i = 0; i < 16; ++i) {
-          cout << std::setw(5) << v[i] << " ";
-        }
-        cout << endl;
-        cout.flags(f);
-      }
+      // stringstream a("power cycling 3.3V due to VProbe read error");
+      // fLOG(ERROR, a.str());
+      // powerCycle3V3();
+      // stringstream b("power cycling 3.3V done");
+      // fLOG(ERROR, b.str());
     }
+  }
+
+  if (fVerbose > 9) {
+    fLOG(INFO, "bufferC0: ");
+    for (int i = 0; i < 18; i +=2) {
+      fLOG(INFO, "i = " + to_string(i) + ": " + formatHex(static_cast<unsigned int>(bufferC0[i])) + " " + formatHex(static_cast<unsigned int>(bufferC0[i+1])));
+    }
+    fLOG(INFO, "");
+    fLOG(INFO, "bufferC1: ");
+    for (int i = 0; i < 18; i +=2) {
+      fLOG(INFO, "i = " + to_string(i) + ": " + formatHex(static_cast<unsigned int>(bufferC1[i])) + " " + formatHex(static_cast<unsigned int>(bufferC1[i+1])));
+    }
+    fLOG(INFO, "");
   }
 
   double vin   = v[ord[7]]  - v[ord[26]];
@@ -2638,8 +3291,14 @@ void driveHardware::readVProbe(int pos) {
   double vdda3 = v[ord[2]]  - v[ord[3]];
   double vddd3 = v[ord[1]]  - v[ord[3]];
 
+  fMapVprobeGndVoltages.clear();
+  fMapVprobeGndVoltages["gnd3"] = v[ord[3]];
+  fMapVprobeGndVoltages["gnd6"] = v[ord[6]];
+  fMapVprobeGndVoltages["gnd11"] = v[ord[11]];
+  fMapVprobeGndVoltages["gnd14"] = v[ord[14]];
+  fMapVprobeGndVoltages["gnd26"] = v[ord[26]];
+
   stringstream output;
-  //  output << fLOG.shortTimeStamp() << " " <<  std::setprecision(5)
   output << "vprobe" << pos << " = " <<  std::setprecision(5)
          << vin << ","
          << voffs << ","
@@ -2649,9 +3308,23 @@ void driveHardware::readVProbe(int pos) {
          << vdda3 << "," << vddd3 ;
 
   fVprobeVoltages = output.str();
-  cout << fVprobeVoltages << endl;
+  fLOG(INFO, "fVprobeVoltages = " + fVprobeVoltages);
 }
 
+
+// ----------------------------------------------------------------------
+void driveHardware::readVProbeGnd() {
+  stringstream output;
+  output << "vprobegnd = " <<  std::setprecision(5)
+         << fMapVprobeGndVoltages["gnd3"] << ","
+         << fMapVprobeGndVoltages["gnd6"] << ","
+         << fMapVprobeGndVoltages["gnd11"] << ","
+         << fMapVprobeGndVoltages["gnd14"] << ","
+         << fMapVprobeGndVoltages["gnd26"];
+
+  fVprobeGndVoltages = output.str();
+  cout << fVprobeGndVoltages << endl;
+}
 
 // ----------------------------------------------------------------------
 float driveHardware::getTemperature() {
@@ -2788,7 +3461,7 @@ void driveHardware::checkDiskspace() {
 void driveHardware::resetInterlock() {
   fInterlockStatus = 1;
   fStopOperations = 0;
-  
+  fVerbose = 0; 
 #ifdef PI
   turnOnLV();
   // -- delay turning on HV
