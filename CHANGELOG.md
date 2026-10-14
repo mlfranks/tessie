@@ -2,6 +2,10 @@
 
 All notable changes to this fork compared to `ursl/tessie` will be documented in this file.
 
+## 20261014
+- Rebased on upstream tag `2026/10/13-02`
+- Updated 'fix' for `MAX_TEMP` w/o flowswitch to `45.` as `MAX_TEMP` updated to `45.` in upstream ca0ef6b
+
 ## 20260629
 ### Changed
 - Rebased on upstream tag `2026/06/26-03`
